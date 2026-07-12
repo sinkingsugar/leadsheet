@@ -5,7 +5,7 @@ members = ["leadsheet-core", "leadsheet-cli"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "BSD-3-Clause"
 
 [workspace.dependencies]
 midly = "0.5"
