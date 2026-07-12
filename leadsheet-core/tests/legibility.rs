@@ -445,3 +445,29 @@ b2 lead | C3/2 D/2 E2 (3 [CE] z c)4- c4 z4 |
     let back = ingest::ingest_midi(&midi, "frac").unwrap();
     assert_eq!(back.note_count(), notes.len());
 }
+
+#[test]
+fn melodic_channel_wrap_never_hits_the_drum_channel() {
+    // 26 melodic tracks force the channel counter around the wrap; none
+    // may land on GM percussion (channel 9).
+    let insts: Vec<String> = (0..26).map(|i| format!("m{i}:0")).collect();
+    let mut text = format!(
+        "# song: wrap  tempo: 120.00  meter: 4/4  grid: 1/16\n# instruments: {}\n",
+        insts.join(" ")
+    );
+    for i in 0..26 {
+        text.push_str(&format!("b1 m{i} | C16 |\n"));
+    }
+    let q = parse::parse(&text).unwrap();
+    let midi = render::render(&q);
+    let smf = midly::Smf::parse(&midi).unwrap();
+    for track in &smf.tracks {
+        for ev in track {
+            if let midly::TrackEventKind::Midi { channel, message } = ev.kind
+                && matches!(message, midly::MidiMessage::NoteOn { .. })
+            {
+                assert_ne!(channel.as_int(), 9, "melodic note on the drum channel");
+            }
+        }
+    }
+}

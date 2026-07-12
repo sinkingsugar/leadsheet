@@ -55,12 +55,11 @@ pub fn render(q: &QSong) -> Vec<u8> {
         let channel = if track.is_drums {
             9
         } else {
-            let ch = next_melodic_channel;
+            // 15 usable melodic channels: skip GM percussion (9) on every
+            // lap of the wrap, not just the first.
+            let c = next_melodic_channel % 15;
             next_melodic_channel += 1;
-            if next_melodic_channel == 9 {
-                next_melodic_channel += 1;
-            }
-            ch % 16
+            if c >= 9 { c + 1 } else { c }
         };
         let channel = u4::new(channel);
 

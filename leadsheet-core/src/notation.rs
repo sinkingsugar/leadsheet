@@ -303,7 +303,7 @@ pub fn parse_tokens(voice: &str) -> Result<Vec<Tok>, String> {
                 .parse()
                 .ok()
                 .filter(|n| (2..=24).contains(n))
-                .ok_or_else(|| format!("bad tuplet arity in {word:?} (want (2..(24)"))?;
+                .ok_or_else(|| format!("bad tuplet arity in {word:?} (want 2..=24)"))?;
             let mut members: Vec<Tok> = Vec::new();
             let (span, tie) = loop {
                 let Some(w) = words.next() else {

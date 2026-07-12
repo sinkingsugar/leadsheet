@@ -19,7 +19,9 @@
 //! diagnostic alone.
 
 use crate::chord;
-use crate::drums;
+use crate::drums::{
+    self, LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT,
+};
 use crate::error::{Diagnostic, Error};
 use crate::grid::{MusicalTime, QNote, QSong, QTrack};
 use crate::key::Key;
@@ -398,15 +400,6 @@ impl Builder {
         }
     }
 }
-
-/// Drum lane cell codes (shared vocabulary with the emitter).
-const LANE_EMPTY: u8 = 0;
-const LANE_GHOST: u8 = 1;
-const LANE_HIT: u8 = 2;
-const LANE_ACCENT: u8 = 3;
-const LANE_D2: u8 = 4;
-const LANE_D3: u8 = 5;
-const LANE_D4: u8 = 6;
 
 /// Check melodic token syntax and bar-sum without placing notes.
 fn validate_melodic(content: &str, cpb: u32) -> Result<(), Raw> {

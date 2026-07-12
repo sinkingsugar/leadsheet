@@ -13,6 +13,17 @@
 //! in it gets a literal `dNN` lane (GM key number). Drum hits are one-shots:
 //! durations are normalized to one cell at quantization.
 
+/// Lane cell codes — the shared vocabulary between the emitter's lane
+/// grids and the parser's lane reader: empty / ghost / hit / accent, or a
+/// multi-stroke subdivision (drag, triplet, buzz) filling the cell.
+pub(crate) const LANE_EMPTY: u8 = 0;
+pub(crate) const LANE_GHOST: u8 = 1;
+pub(crate) const LANE_HIT: u8 = 2;
+pub(crate) const LANE_ACCENT: u8 = 3;
+pub(crate) const LANE_D2: u8 = 4; // two 32nd strokes
+pub(crate) const LANE_D3: u8 = 5; // triplet strokes
+pub(crate) const LANE_D4: u8 = 6; // four 64th strokes
+
 /// (GM key, lane label) — display order = table order.
 const LANES: &[(u8, &str)] = &[
     (36, "K"),   // acoustic kick

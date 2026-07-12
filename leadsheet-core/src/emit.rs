@@ -25,7 +25,9 @@
 //! lists bar-stacks with run-length encoding (see [`crate::pattern`]).
 
 use crate::chord;
-use crate::drums;
+use crate::drums::{
+    self, LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT,
+};
 use crate::grid::{MusicalTime, QSong, QTrack, TICKS_PER_BEAT};
 use crate::notation::{self, Tok, emit_token_spelled};
 use crate::pattern;
@@ -239,16 +241,6 @@ fn try_chordal(segs: &[Seg], bar_len: MusicalTime, flats: bool) -> Option<String
         .collect();
     Some(cols.join(" "))
 }
-
-/// Drum lane cell: empty / ghost / hit / accent, or a multi-stroke
-/// subdivision (drag, triplet, buzz) filling the cell.
-pub(crate) const LANE_EMPTY: u8 = 0;
-pub(crate) const LANE_GHOST: u8 = 1;
-pub(crate) const LANE_HIT: u8 = 2;
-pub(crate) const LANE_ACCENT: u8 = 3;
-pub(crate) const LANE_D2: u8 = 4; // two 32nd strokes
-pub(crate) const LANE_D3: u8 = 5; // triplet strokes
-pub(crate) const LANE_D4: u8 = 6; // four 64th strokes
 
 type Lanes = BTreeMap<u8, Vec<u8>>;
 
