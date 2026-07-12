@@ -17,6 +17,17 @@
 //! reparse to themselves. What the theorem forbids is silent loss or
 //! drift of music or structure through the text — every triage-2 B-item
 //! was an instance of a validate() hole this property now guards.
+//!
+//! Triage-3 C1 adds the complement, `hostile_mutation_is_rejected`:
+//! `arb_document` is valid by construction, so it can never reach the
+//! host-boundary holes (its keys are 0..12, its ChordSyms come from
+//! `parse_symbol`). The second property takes a valid Document, mutates
+//! ONE public field into a hostile value — bad key pc, noncanonical
+//! chord discriminant, off-bucket velocity, dangling reference,
+//! syntax-breaking text, bad lane shape, zero meter denominator — and
+//! asserts `validate()` (and therefore `resolve()`) returns `Err`
+//! without panicking. The host boundary as a systematic target instead
+//! of a hand-written list.
 
 use leadsheet_core::doc::{
     ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, MelodicBar, PatternBody,
@@ -399,6 +410,178 @@ fn arb_document() -> impl Strategy<Value = Document> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// C1 — hostile single-field mutations. Each MUST make the Document
+// invalid; the property asserts validate() says so without panicking.
+
+fn bodies_mut(d: &mut Document) -> impl Iterator<Item = &mut PatternBody> {
+    d.patterns.iter_mut().map(|p| &mut p.body).chain(d.timeline.iter_mut().filter_map(
+        |i| match i {
+            TimelineItem::Direct(x) => Some(&mut x.body),
+            _ => None,
+        },
+    ))
+}
+
+fn first_chord_sym(d: &mut Document) -> Option<&mut chord::ChordSym> {
+    bodies_mut(d).find_map(|b| match b {
+        PatternBody::Chordal(bars) => bars.iter_mut().flatten().find_map(|c| match c {
+            ChordCol::Sym(s) => Some(s),
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+fn first_row(d: &mut Document) -> Option<&mut Row> {
+    d.timeline.iter_mut().find_map(|i| match i {
+        TimelineItem::Row(r) => Some(r),
+        _ => None,
+    })
+}
+
+fn first_lane(d: &mut Document) -> Option<&mut Vec<u8>> {
+    bodies_mut(d).find_map(|b| match b {
+        PatternBody::Drums(db) => db.lanes.first_mut().map(|(_, cells)| cells),
+        _ => None,
+    })
+}
+
+fn first_note_pitch(d: &mut Document) -> Option<&mut u8> {
+    bodies_mut(d).find_map(|b| match b {
+        PatternBody::Melodic(bars) => {
+            bars.iter_mut().flat_map(|mb| mb.voices.iter_mut().flatten()).find_map(|t| match t {
+                Tok::Note { pitch, .. } => Some(pitch),
+                _ => None,
+            })
+        }
+        _ => None,
+    })
+}
+
+fn first_tuplet_span(d: &mut Document) -> Option<&mut MusicalTime> {
+    bodies_mut(d).find_map(|b| match b {
+        PatternBody::Melodic(bars) => {
+            bars.iter_mut().flat_map(|mb| mb.voices.iter_mut().flatten()).find_map(|t| match t {
+                Tok::Tuplet { span, .. } => Some(span),
+                _ => None,
+            })
+        }
+        _ => None,
+    })
+}
+
+/// Apply hostile mutation `which`, walking forward past inapplicable
+/// ones (mutation 0 always applies). Returns the mutation's name.
+fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
+    const N: u32 = 21;
+    for k in 0..N {
+        let (name, applied) = match (which as u32 + k) % N {
+            0 => ("key pc out of range", {
+                d.header.key =
+                    Some(Key { tonic_pc: 12 + spice % 244, minor: spice.is_multiple_of(2) });
+                true
+            }),
+            1 => ("zero meter denominator", {
+                d.header.meter = (4, 0);
+                true
+            }),
+            2 => ("untrimmed song name", {
+                d.header.name = format!(" {}", d.header.name);
+                true
+            }),
+            3 => ("non-finite tempo", {
+                d.header.bpm = f64::NAN;
+                true
+            }),
+            4 => ("swing percent out of range", {
+                d.header.swing = Some(Swing { level: 16, percent: 99 });
+                true
+            }),
+            5 => ("noncanonical chord root", {
+                first_chord_sym(d).map(|s| s.root_pc = 13 + spice % 243).is_some()
+            }),
+            6 => ("noncanonical chord bass", {
+                first_chord_sym(d).map(|s| s.bass_pc = 12 + spice % 244).is_some()
+            }),
+            7 => ("chord quality overshoot", {
+                first_chord_sym(d)
+                    .map(|s| s.quality = chord::QUALITIES.len() + spice as usize)
+                    .is_some()
+            }),
+            8 => ("off-bucket base velocity", {
+                d.patterns.first_mut().map(|p| p.base_vel = 70).is_some()
+            }),
+            9 => ("pattern track out of range", {
+                let n = d.instruments.len();
+                d.patterns.first_mut().map(|p| p.track = n + 1).is_some()
+            }),
+            10 => ("syntax-breaking instrument name", {
+                d.instruments.first_mut().map(|i| i.name = "a[b".into()).is_some()
+            }),
+            11 => ("empty instrument name", {
+                d.instruments.first_mut().map(|i| i.name = String::new()).is_some()
+            }),
+            12 => ("comment-shaped row label", {
+                first_row(d).map(|r| r.label = Some("#x".into())).is_some()
+            }),
+            13 => ("zero row repeats", first_row(d).map(|r| r.reps = 0).is_some()),
+            14 => ("direct bar zero", {
+                d.timeline
+                    .iter_mut()
+                    .find_map(|i| match i {
+                        TimelineItem::Direct(x) => Some(x),
+                        _ => None,
+                    })
+                    .map(|x| x.bar = 0)
+                    .is_some()
+            }),
+            15 => ("bad lane cell code", {
+                first_lane(d).map(|cells| cells[0] = LANE_D4 + 1 + spice % 100).is_some()
+            }),
+            16 => ("lane length off by one", {
+                first_lane(d)
+                    .map(|cells| {
+                        cells.pop();
+                    })
+                    .is_some()
+            }),
+            17 => ("dangling kin reference", {
+                d.patterns.first_mut().map(|p| p.kin = Some(1000)).is_some()
+            }),
+            18 => ("pitch beyond MIDI", first_note_pitch(d).map(|p| *p = 200).is_some()),
+            19 => ("duplicate pattern id", {
+                if d.patterns.len() >= 2 {
+                    d.patterns[1].id = d.patterns[0].id;
+                    true
+                } else {
+                    false
+                }
+            }),
+            20 => ("tuplet span below arity", {
+                first_tuplet_span(d).map(|s| *s = MusicalTime(1)).is_some()
+            }),
+            _ => unreachable!(),
+        };
+        if applied {
+            return name;
+        }
+    }
+    unreachable!("mutation 0 always applies")
+}
+
+proptest! {
+    #[test]
+    fn hostile_mutation_is_rejected(
+        (mut d, which, spice) in (arb_document(), any::<u8>(), any::<u8>())
+    ) {
+        let name = mutate_hostile(&mut d, which, spice);
+        // Err, never a panic — resolve() included (it validates first).
+        prop_assert!(d.validate().is_err(), "'{}' slipped through validate:\n{:#?}", name, d);
+        prop_assert!(d.resolve().is_err(), "'{}' slipped through resolve", name);
+    }
+}
+
 proptest! {
     #[test]
     fn document_canonicality(d in arb_document()) {
@@ -414,9 +597,16 @@ proptest! {
         prop_assert!(d2.validate().is_ok(), "reparsed Document must validate:\n{}", text);
         // 2. Emission is a fixpoint.
         prop_assert_eq!(&emit::emit_document(&d2), &text, "fixpoint");
-        // 3. Resolution is preserved: same music on both routes.
+        // 3. Resolution is preserved: same music AND same compiled
+        //    header on both routes (C2 — a header-mangling bug must not
+        //    slip the property just because the notes survived).
         let q1 = d.resolve().map_err(|e| TestCaseError::fail(format!("resolve d: {e}")))?;
         let q2 = d2.resolve().map_err(|e| TestCaseError::fail(format!("resolve d2: {e}")))?;
+        prop_assert_eq!(&q1.name, &q2.name);
+        prop_assert_eq!(q1.bpm, q2.bpm);
+        prop_assert_eq!(q1.meter, q2.meter);
+        prop_assert_eq!(q1.key, q2.key);
+        prop_assert_eq!(q1.swing, q2.swing);
         prop_assert_eq!(q1.n_bars, q2.n_bars, "{}", text);
         prop_assert_eq!(q1.tracks.len(), q2.tracks.len());
         for (a, b) in q1.tracks.iter().zip(&q2.tracks) {
