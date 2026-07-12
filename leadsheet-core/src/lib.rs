@@ -4,6 +4,7 @@
 //! chordify/voices → pattern dedup → text emission; plus the inverse
 //! (parse → render to MIDI), which is the correctness oracle.
 
+pub mod analysis;
 pub mod chord;
 pub mod diff;
 pub mod doc;

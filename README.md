@@ -78,6 +78,15 @@ The whole text format is specified in **[FORMAT.md](FORMAT.md)** — short
 enough to paste into an LLM prompt next to a song, which is the intended
 use.
 
+## Scope
+
+leadsheet is the **compiler and semantic IR** for music-as-text: the
+format, parse/emit, the Document AST, quantization and inference,
+render, metrics, diagnostics, semantic diff, derived analysis views.
+It is deliberately *not* a DAW, a collaboration platform, a plugin
+host, or an audio engine — hosts do that; this crate hands them a
+trustworthy AST and canonical text.
+
 ## Status
 
 Working end to end; format may still evolve. Rust workspace:

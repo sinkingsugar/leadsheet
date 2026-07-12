@@ -83,11 +83,18 @@ Acceptance: `cargo test` green incl. new suites; no format changes.
 
 ## Phase 2 — Expose the document model (the big one)
 
-Today `parse()` flattens patterns/arrangement into `QSong`, discarding
-source structure. Hosts (and the eventual CRDT layer) need the structure.
+**Status: DONE 2026-07-12.** `doc::Document` is the faithful AST
+(author ids, variant lane diffs as written, multi-bar bodies, labeled
+rows and direct bars on one source-ordered timeline — order is
+semantic for tie joining, pinned by tests). Pipeline:
+`parse_document → Document → resolve() → QSong` and
+`from_qsong → Document → emit_document`, with `parse`/`emit` as
+wrappers; corpus and Matrix.mid output stayed byte-identical.
+`validate()` on both layers; `leadsheet diff` ships. Tuplets are
+semantic objects — inexact divisions (septuplets) parse and place by
+the DESIGN-960 boundary rule.
 
-Decisions adopted from the 2026-07-12 review triage, before any types
-are written:
+Decisions adopted from the 2026-07-12 review triage (all implemented):
 
 - **One canonical, the Document's** (B1): `fmt` becomes
   Document-canonical — hand-authored structure (multi-bar patterns,
@@ -107,23 +114,15 @@ are written:
   triage; off-grid drum onsets still panic in lane emission). CLI entry
   points call validate; no new deps, no format change.
 
-- [ ] New `doc` module: `Document { header, patterns: Vec<PatternDef>,
-      arrangement: Vec<Row>, direct_bars }` — the faithful AST of a `.ls`
-      file, all pattern kinds (melodic/chordal/drums, variants, dynamics),
-      tuplets as semantic objects (unlocks inexact divisions à la
-      septuplet, per DESIGN-960's placement rule).
-- [ ] Split the pipeline per B2 above.
-- [ ] Canonicality oracle extends to the Document layer:
-      `emit_document(parse_document(text)) == text` for canonical text,
-      byte-for-byte.
-- [ ] `Document::validate()` / `QSong::validate()` per B3 above.
-- [ ] **Semantic diff**: `leadsheet diff a.ls b.ls` over Documents, not
-      lines. Reports at the right granularity: header changes, pattern
-      added/removed/modified (per-lane for drums, per-bar for melodic),
-      arrangement row changes. Plain-text output a human or LLM reads
-      directly; `--json` only when a real consumer exists.
-- [ ] Pin current mixed direct-bar + arrangement semantics with tests
-      before the resolver changes the plumbing (triage E6).
+- [x] New `doc` module — the faithful AST (timeline replaces separate
+      arrangement/direct vecs: source order is tie-semantic), tuplets as
+      semantic objects (inexact divisions place by `round(i·S/n)`).
+- [x] Pipeline split per B2 (wrappers kept).
+- [x] Document-layer canonicality: emission is a fixpoint and Documents
+      survive the loop equal (tests/phase2.rs).
+- [x] `Document::validate()` / `QSong::validate()` per B3.
+- [x] **Semantic diff** `leadsheet diff` (plain text; per bar / per lane).
+- [x] Mixed direct-bar + arrangement semantics pinned (E6).
 
 Acceptance: all existing tests + corpus green; compressor-emitted text
 unchanged byte-for-byte vs. Phase 1.
@@ -136,8 +135,9 @@ Prerequisite for melodic 32nds, triplets, grace notes — do it once.
 change, corpus byte-identical without regeneration, Matrix.mid compress
 output byte-identical, roundtrip F1 unchanged through the 960 PPQ render.
 **3b (fractions + tuplet syntax) DONE 2026-07-12** — same day, on the
-delegated spelling decision. Still open below: tuplets as semantic
-objects (needs Phase 2's Document) and per-track swing (unblessed).
+delegated spelling decision; tuplets became true semantic objects with
+Phase 2 (inexact divisions parse and place by the boundary rule). Still
+open below: per-track swing (unblessed).
 
 - [x] Internal time base moves from 16th-cells to **ticks: 960 per beat**
       — the industry-converged resolution (Ableton Live, Pro Tools,
@@ -157,12 +157,13 @@ objects (needs Phase 2's Document) and per-track swing (unblessed).
 - [x] Fix the `dur_cells` overload: drums get an explicit
       `strokes: u8` (subdivision count) separate from duration; melodic
       duration becomes ticks. Emission of existing files byte-identical.
-- [ ] Tuplets live in the IR as **exact semantic objects** (`played: N,
-      in_time_of: M, members`) — never as pre-rounded durations. Tick
-      placement happens only at compile time, in one function:
-      boundaries `round(i·960/n)`, span always closes exactly. A
-      septuplet stays "a septuplet" in the source and the Document even
-      though its tick placement rounds.
+- [x] Tuplets live in the IR as **exact semantic objects**
+      (`Tok::Tuplet { n, members, span }` on the Document) — never as
+      pre-rounded durations. Tick placement happens only at compile
+      time, in one function (`notation::tuplet_boundary`): boundaries
+      `round(i·S/n)`, span always closes exactly. A septuplet stays "a
+      septuplet" in the source and the Document even though its tick
+      placement rounds.
 - [x] Melodic 32nds — `/` fraction spelling (exactly ABC's prior:
       `C/2` halves the unit). Shipped 2026-07-12.
 - [x] Melodic tuplets — `(3 C D E)4` shipped 2026-07-12 (equal members,
@@ -184,39 +185,39 @@ new rhythms roundtrip.
 
 ## Phase 4 — Prove LLM editability (lean version)
 
-Not a framework: a directory of task fixtures + constraint checks built
-on what already exists (`metrics`, semantic diff, `check`). Lands after
-the format settles (post-Phase 3).
+**Harness + fixtures DONE 2026-07-12** (`eval/`, `leadsheet eval`);
+what remains is *running* it: an external runner producing `output.ls`
+per model, including the retroactive 3b spelling bake-off. No API
+calls, no model deps in the crate.
 
-- [ ] `eval/` fixtures: (input `.ls`, instruction, expected constraints).
-      Starter tasks: transpose w/o rhythm change; edit drums w/o touching
-      other tracks; extend section by 4 bars; reharmonize preserving top
-      line; repair deliberately-broken `.ls` from diagnostics.
+- [x] `eval/` fixtures: the five starter tasks (transpose w/o rhythm
+      change; drum edit w/o touching other tracks; extend by 4 bars;
+      reharmonize preserving the top line; repair from diagnostics),
+      each with committed known-good sample outputs.
 - [ ] **Retroactive spelling bake-off** (governance debt from 3b): measure
       `/` fractions and `(n …)S` tuplets across models — zero-shot
       comprehension, spec-in-context writing validity, edit-task pass
       rate — and report; the data may overturn the delegated spellings.
-- [ ] **Expected-behavior fixture**: quantization snaps to 16ths, so
-      fractional/tuplet content does not survive MIDI → compress
-      (deliberate, DESIGN-960: authoring resolution ≠ transcription
-      resolution). Encode as a fixture so it's protected, not
-      rediscovered as a bug.
-- [ ] One CLI entry (`leadsheet eval <dir>`) that checks saved model
-      outputs against constraints and prints a pass/fail table. No API
-      calls, no model deps in the crate.
+- [x] **Expected-behavior fixture** (`eval/transcription-grid`):
+      quantization snaps to 16ths; sub-16th authoring content
+      deliberately does not survive MIDI → compress.
+- [x] One CLI entry (`leadsheet eval <dir>`), pass/fail table, exit 1 on
+      any FAIL; self-tests in CI via the sample outputs.
 
 ## Phase 5 — Host enablement
 
-- [ ] **wasm32 target**: `leadsheet-core` compiles to
-      `wasm32-unknown-unknown` (deps look clean: midly/serde/thiserror);
-      CI check so it stays true. Opens web playgrounds / Edge Talk embeds.
-- [ ] **Analysis view** (derived, never authoritative): roman-numeral /
-      chord-function annotation over real comping via
-      `leadsheet inspect --harmony`, and optionally as `#`-comment lines
-      in emitted text (ignored by parser, re-derived deterministically —
-      invariant 2 compliant). Makes real transcriptions *legible* even
-      when voicings stay as honest `[...]` tuples.
-- [ ] README gets the scope charter (one paragraph: compiler, not DAW).
+**Status: DONE 2026-07-12** (comment-line emission deliberately not
+done — syntax decision stays deferred per the Rejected list).
+
+- [x] **wasm32 target**: `leadsheet-core` builds on
+      `wasm32-unknown-unknown` out of the box; GitHub Actions CI checks
+      fmt, clippy -D warnings, tests, and the wasm build on every push.
+- [x] **Analysis view**: `leadsheet inspect --harmony` — duration-
+      weighted pitch-class scoring per bar against loose chord templates,
+      spelled as symbols + roman numerals in the detected key (derived,
+      lossy, never authoritative; on the Matrix transcription it reads
+      the Bb-Lydian I ↔ IImaj7 oscillation straight off the comping).
+- [x] README carries the scope charter.
 
 ## Deferred / explicitly elsewhere
 

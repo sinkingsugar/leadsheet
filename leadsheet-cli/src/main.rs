@@ -52,6 +52,10 @@ enum Cmd {
     /// including the tempo/grid the compressor would use.
     Inspect {
         input: PathBuf,
+        /// Also print the derived per-bar harmony view (roman numerals
+        /// over the detected key — analysis-grade, never authoritative).
+        #[arg(long)]
+        harmony: bool,
         #[command(flatten)]
         tempo: TempoArgs,
     },
@@ -179,7 +183,7 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Cmd::Inspect { input, tempo } => {
+        Cmd::Inspect { input, harmony, tempo } => {
             let song = leadsheet_core::ingest::ingest_path(&input)?;
             let (infer_tempo, bpm) = (tempo.infer_tempo, tempo.bpm);
             println!("song: {}", song.name);
@@ -228,6 +232,38 @@ fn main() -> Result<()> {
                 "µtiming discarded by 1/16 snap: mean {:.1} ms, max {:.1} ms",
                 report.mean_abs_residual_ms, report.max_abs_residual_ms
             );
+            if harmony {
+                println!("harmony (derived, lossy):");
+                let mut run: Option<(u32, leadsheet_core::analysis::BarHarmony)> = None;
+                let bars = leadsheet_core::analysis::harmony(&qsong);
+                let flush = |run: &mut Option<(u32, leadsheet_core::analysis::BarHarmony)>,
+                             upto: u32| {
+                    if let Some((start, h)) = run.take() {
+                        if upto - start > 1 {
+                            println!(
+                                "  bars {:>3}-{:<3} {:<8} {}",
+                                start + 1,
+                                upto,
+                                h.symbol,
+                                h.roman
+                            );
+                        } else {
+                            println!("  bar  {:>3}     {:<8} {}", start + 1, h.symbol, h.roman);
+                        }
+                    }
+                };
+                for (i, b) in bars.iter().enumerate() {
+                    match (b, &run) {
+                        (Some(h), Some((_, r))) if h == r => {}
+                        (Some(h), _) => {
+                            flush(&mut run, i as u32);
+                            run = Some((i as u32, h.clone()));
+                        }
+                        (None, _) => flush(&mut run, i as u32),
+                    }
+                }
+                flush(&mut run, bars.len() as u32);
+            }
         }
         Cmd::Check { input, json } => {
             let read = std::fs::read_to_string(&input);

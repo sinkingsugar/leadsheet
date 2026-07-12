@@ -176,8 +176,13 @@ leadsheet roundtrip in.mid               # F1 + compression report
 leadsheet inspect   in.mid               # what would the compressor see
 leadsheet check     out.ls [--json]      # validate; diagnostics carry a code,
                                          # line:col, message, and a suggestion
-leadsheet fmt       out.ls               # rewrite in canonical form (in place;
-                                         # -o for elsewhere, `-` for stdout)
+leadsheet fmt       out.ls               # canonical form, in place (-o / `-`);
+                                         # Document-canonical: your structure
+                                         # (ids, direct bars, labels) survives
+leadsheet diff      a.ls b.ls            # semantic diff (per bar / per lane)
+leadsheet eval      eval/                # check saved model outputs against
+                                         # musical constraints
+leadsheet inspect   in.mid --harmony     # derived roman-numeral view
 ```
 
 Tempo handling: a declared tempo whose grid fits the onsets poorly
