@@ -150,6 +150,42 @@ arrangement:
 }
 
 #[test]
+fn multi_bar_patterns_parse_and_place() {
+    // The plan's own Layer-4 example shape: a 4-bar chord pattern stacked
+    // with 1-bar patterns that repeat each bar of the unit.
+    let text = "\
+# song: multi  tempo: 120.00  meter: 4/4  grid: 1/16
+# instruments: bass:33 piano:0
+P1 bass | A,,16 |
+P2 piano* | Am . . . | F . C . | G . . . | Am . . . |
+P3 bass | C,8 D,8- | D,8 E,8 |
+arrangement:
+  [P1+P2] x2
+  [P3]
+";
+    let q = parse::parse(text).unwrap();
+    assert_eq!(q.n_bars, 10, "2 reps x 4-bar unit + 2-bar P3");
+    let bass = &q.tracks[0];
+    // P1 (A,, = A2 = MIDI 45) repeats every bar of both units: 8 whole notes.
+    assert_eq!(bass.notes.iter().filter(|n| n.pitch == 45 && n.dur_cells == 16).count(), 8);
+    // P3's tie spans its internal bar line: C,8 then D,16 then E,8.
+    let d = bass.notes.iter().find(|n| n.pitch == 50).unwrap();
+    assert_eq!((d.cell, d.dur_cells), (8 * 16 + 8, 16), "tie joined inside pattern");
+    // Piano: Am F C G Am cycle twice = 4 chords x 3 notes x 2 reps.
+    assert_eq!(q.tracks[1].notes.len(), 30);
+    // Mismatched multi-bar lengths in one stack are rejected.
+    let bad = "\
+# song: x  tempo: 120  meter: 4/4
+# instruments: a:0 b:0
+P1 a | C16 | D16 |
+P2 b | E16 | F16 | G16 |
+arrangement:
+  [P1+P2]
+";
+    assert!(parse::parse(bad).is_err());
+}
+
+#[test]
 fn arrangement_rejects_unknown_pattern_and_duplicates() {
     let head = "# song: x  tempo: 100  meter: 4/4\n# instruments: p:0\n";
     let unknown = format!("{head}arrangement:\n  [P3]\n");

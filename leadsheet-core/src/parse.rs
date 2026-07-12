@@ -41,7 +41,9 @@ enum RecBody {
 
 struct PatternRec {
     track: usize,
-    body: RecBody,
+    /// One entry per bar: patterns may span several bars
+    /// (`P3 piano* | Am . . . | F . C . |`). Drum patterns are one bar.
+    bars: Vec<RecBody>,
 }
 
 /// One parsed chord-line column.
@@ -342,10 +344,9 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
     ) -> Result<(), String> {
         match block.target {
             BlockTarget::Pattern(id) => {
-                if patterns
-                    .insert(id, PatternRec { track: block.track, body: RecBody::Drums(block.lanes) })
-                    .is_some()
-                {
+                let rec =
+                    PatternRec { track: block.track, bars: vec![RecBody::Drums(block.lanes)] };
+                if patterns.insert(id, rec).is_some() {
                     return Err(format!("duplicate pattern P{id}"));
                 }
             }
@@ -394,18 +395,35 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         let before_pipe = line.split('|').next().unwrap_or(line);
         if before_pipe.contains('[') {
             let (ids, reps) = parse_row(line).map_err(|m| err(lineno, m))?;
-            for _ in 0..reps {
-                for id in &ids {
-                    let p = patterns
-                        .get(id)
-                        .ok_or_else(|| err(lineno, format!("unknown pattern P{id}")))?;
-                    // apply() needs &mut b while p borrows patterns; move the
-                    // needed pieces out by shared reference via raw indexing.
-                    let track = p.track;
-                    let body = &patterns[id].body;
-                    b.apply(track, next_bar * cpb, cpb, body).map_err(|m| err(lineno, m))?;
+            // Row unit = the longest pattern; 1-bar patterns repeat per bar,
+            // longer ones must all agree on the unit length.
+            let mut unit = 1u32;
+            for id in &ids {
+                let p = patterns
+                    .get(id)
+                    .ok_or_else(|| err(lineno, format!("unknown pattern P{id}")))?;
+                unit = unit.max(p.bars.len() as u32);
+            }
+            for id in &ids {
+                let len = patterns[id].bars.len() as u32;
+                if len != 1 && len != unit {
+                    return Err(err(
+                        lineno,
+                        format!("P{id} is {len} bars but the row unit is {unit}"),
+                    ));
                 }
-                next_bar += 1;
+            }
+            for _ in 0..reps {
+                for offset in 0..unit {
+                    for id in &ids {
+                        let p = &patterns[id];
+                        let track = p.track;
+                        let body = if p.bars.len() == 1 { &p.bars[0] } else { &p.bars[offset as usize] };
+                        b.apply(track, (next_bar + offset) * cpb, cpb, body)
+                            .map_err(|m| err(lineno, m))?;
+                    }
+                }
+                next_bar += unit;
             }
             continue;
         }
@@ -438,28 +456,37 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             continue;
         }
 
-        // Pattern definition or direct bar line.
+        // Pattern definition or direct bar line. `content` may span several
+        // bars separated by `|`.
         let (head, inst, chordal, content) = split_music_line(line).map_err(|m| err(lineno, m))?;
         let ti = *b
             .track_index
             .get(inst)
             .ok_or_else(|| err(lineno, format!("unknown instrument {inst:?}")))?;
-        let body = if chordal {
-            parse_chord_cols(content, cpb).map_err(|m| err(lineno, m))?;
-            RecBody::Chordal(content.trim().to_string())
-        } else {
-            validate_melodic(content, cpb).map_err(|m| err(lineno, m))?;
-            RecBody::Melodic(content.trim().to_string())
-        };
+        let bars: Vec<RecBody> = content
+            .split('|')
+            .map(|seg| {
+                if chordal {
+                    parse_chord_cols(seg, cpb)?;
+                    Ok(RecBody::Chordal(seg.trim().to_string()))
+                } else {
+                    validate_melodic(seg, cpb)?;
+                    Ok(RecBody::Melodic(seg.trim().to_string()))
+                }
+            })
+            .collect::<Result<_, String>>()
+            .map_err(|m| err(lineno, m))?;
         if let Some(id) = head.strip_prefix('P').and_then(|n| n.parse::<usize>().ok()) {
-            if patterns.insert(id, PatternRec { track: ti, body }).is_some() {
+            if patterns.insert(id, PatternRec { track: ti, bars }).is_some() {
                 return Err(err(lineno, format!("duplicate pattern P{id}")));
             }
         } else if let Some(bar) =
             head.strip_prefix('b').and_then(|n| n.parse::<u32>().ok()).filter(|n| *n >= 1)
         {
-            b.apply(ti, (bar - 1) * cpb, cpb, &body).map_err(|m| err(lineno, m))?;
-            max_bar = max_bar.max(bar);
+            for (i, body) in bars.iter().enumerate() {
+                b.apply(ti, (bar - 1 + i as u32) * cpb, cpb, body).map_err(|m| err(lineno, m))?;
+            }
+            max_bar = max_bar.max(bar + bars.len() as u32 - 1);
         } else {
             return Err(err(lineno, format!("expected P<n> or b<n>, got {head:?}")));
         }
