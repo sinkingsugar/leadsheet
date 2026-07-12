@@ -28,13 +28,20 @@
 //! asserts `validate()` (and therefore `resolve()`) returns `Err`
 //! without panicking. The host boundary as a systematic target instead
 //! of a hand-written list.
+//!
+//! Triage-4 A4 adds the QSong sibling, `hostile_qsong_mutation_is_
+//! rejected`: valid QSongs (from `resolve()` of generated Documents)
+//! with one public field mutated — program, velocity, timing (including
+//! overflow-shaped onsets/durations that the validator's own arithmetic
+//! must survive), strokes, names, header — must fail `QSong::validate()`
+//! without panicking.
 
 use leadsheet_core::doc::{
     ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, MelodicBar, PatternBody,
     PatternDef, Row, TimelineItem,
 };
 use leadsheet_core::drums::LANE_D4;
-use leadsheet_core::grid::{MusicalTime, Swing};
+use leadsheet_core::grid::{MusicalTime, QSong, Swing};
 use leadsheet_core::key::Key;
 use leadsheet_core::notation::{Mark, Tok, tuplet_boundary};
 use leadsheet_core::{chord, emit, parse};
@@ -474,7 +481,7 @@ fn first_tuplet_span(d: &mut Document) -> Option<&mut MusicalTime> {
 /// Apply hostile mutation `which`, walking forward past inapplicable
 /// ones (mutation 0 always applies). Returns the mutation's name.
 fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 22;
+    const N: u32 = 24;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -565,6 +572,21 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
                 d.header.bpm += 0.001;
                 true
             }),
+            22 => ("melodic program beyond GM", {
+                d.instruments
+                    .iter_mut()
+                    .find(|i| !i.is_drums)
+                    .map(|i| i.program = 128 + spice % 128)
+                    .is_some()
+            }),
+            23 => ("source kit program", {
+                // The text has no slot for one (`drums:kit`).
+                d.instruments
+                    .iter_mut()
+                    .find(|i| i.is_drums)
+                    .map(|i| i.program = 1 + spice % 127)
+                    .is_some()
+            }),
             _ => unreachable!(),
         };
         if applied {
@@ -572,6 +594,128 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
         }
     }
     unreachable!("mutation 0 always applies")
+}
+
+// ---------------------------------------------------------------------------
+// Triage-4 A4 — the QSong sibling: the compiled layer's boundary got its
+// r4 holes (program, velocity, overflowing extents) found by hand; this
+// makes it a systematic target too. Valid QSongs come from resolve() of
+// generated Documents — the cheapest valid source.
+
+fn qsong_track(q: &mut QSong, drums: Option<bool>) -> Option<&mut leadsheet_core::grid::QTrack> {
+    q.tracks.iter_mut().find(|t| drums.is_none_or(|d| t.is_drums == d))
+}
+
+/// First note on a track matching `drums` (None = any track).
+fn qsong_note(q: &mut QSong, drums: Option<bool>) -> Option<&mut leadsheet_core::grid::QNote> {
+    q.tracks
+        .iter_mut()
+        .filter(|t| drums.is_none_or(|d| t.is_drums == d))
+        .find_map(|t| t.notes.first_mut())
+}
+
+fn mutate_hostile_qsong(q: &mut QSong, which: u8, spice: u8) -> &'static str {
+    const N: u32 = 22;
+    for k in 0..N {
+        let (name, applied) = match (which as u32 + k) % N {
+            0 => ("key pc out of range", {
+                q.key = Some(Key { tonic_pc: 12 + spice % 244, minor: spice.is_multiple_of(2) });
+                true
+            }),
+            1 => ("zero meter denominator", {
+                q.meter = (4, 0);
+                true
+            }),
+            2 => ("zero meter numerator", {
+                q.meter = (0, 4);
+                true
+            }),
+            3 => ("meter numerator beyond 64", {
+                q.meter = (65, 4);
+                true
+            }),
+            4 => ("swing percent out of range", {
+                q.swing = Some(Swing { level: 8, percent: 99 });
+                true
+            }),
+            5 => ("non-finite tempo", {
+                q.bpm = f64::NAN;
+                true
+            }),
+            6 => ("untrimmed song name", {
+                q.name = format!(" {}", q.name);
+                true
+            }),
+            7 => ("syntax-breaking track name", {
+                qsong_track(q, None).map(|t| t.name = "a b".into()).is_some()
+            }),
+            8 => ("empty track name", {
+                qsong_track(q, None).map(|t| t.name = String::new()).is_some()
+            }),
+            9 => ("duplicate track names", {
+                if q.tracks.len() >= 2 {
+                    q.tracks[1].name = q.tracks[0].name.clone();
+                    true
+                } else {
+                    false
+                }
+            }),
+            10 => ("program beyond GM", {
+                qsong_track(q, None).map(|t| t.program = 128 + spice % 128).is_some()
+            }),
+            11 => ("pitch beyond MIDI", qsong_note(q, None).map(|n| n.pitch = 200).is_some()),
+            12 => ("note-off velocity", qsong_note(q, None).map(|n| n.vel = 0).is_some()),
+            13 => ("velocity beyond MIDI", {
+                qsong_note(q, None).map(|n| n.vel = 128 + spice % 128).is_some()
+            }),
+            14 => ("negative onset", {
+                qsong_note(q, None).map(|n| n.onset = MusicalTime(-1)).is_some()
+            }),
+            15 => ("onset near i64::MAX", {
+                // Passes the sign checks; the extent add must stay total.
+                qsong_note(q, None).map(|n| n.onset = MusicalTime(i64::MAX)).is_some()
+            }),
+            16 => ("zero duration", {
+                qsong_note(q, None).map(|n| n.dur = MusicalTime::ZERO).is_some()
+            }),
+            17 => ("melodic duration near i64::MAX", {
+                // Melodic only: a drum note's extent is one cell, so a
+                // hostile dur alone would not trip the end check.
+                qsong_note(q, Some(false)).map(|n| n.dur = MusicalTime(i64::MAX)).is_some()
+            }),
+            18 => ("melodic strokes", qsong_note(q, Some(false)).map(|n| n.strokes = 2).is_some()),
+            19 => ("stroke digit out of range", {
+                qsong_note(q, Some(true)).map(|n| n.strokes = 5).is_some()
+            }),
+            20 => ("drum hit off the 16th grid", {
+                qsong_note(q, Some(true)).map(|n| n.onset += MusicalTime(1)).is_some()
+            }),
+            21 => ("note past n_bars", {
+                if q.tracks.iter().any(|t| !t.notes.is_empty()) {
+                    q.n_bars = 0;
+                    true
+                } else {
+                    false
+                }
+            }),
+            _ => unreachable!(),
+        };
+        if applied {
+            return name;
+        }
+    }
+    unreachable!("mutation 0 always applies")
+}
+
+proptest! {
+    #[test]
+    fn hostile_qsong_mutation_is_rejected(
+        (d, which, spice) in (arb_document(), any::<u8>(), any::<u8>())
+    ) {
+        let mut q = d.resolve().expect("generated Documents resolve");
+        let name = mutate_hostile_qsong(&mut q, which, spice);
+        prop_assert!(q.validate().is_err(), "'{}' slipped through QSong::validate", name);
+    }
 }
 
 proptest! {
