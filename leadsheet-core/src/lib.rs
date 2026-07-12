@@ -5,6 +5,7 @@
 //! (parse → render to MIDI), which is the correctness oracle.
 
 pub mod chord;
+pub mod diff;
 pub mod doc;
 pub mod drums;
 pub mod emit;

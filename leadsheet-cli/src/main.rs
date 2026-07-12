@@ -86,6 +86,10 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Semantic diff of two leadsheet files, over their Documents (per
+    /// bar for melodic/chordal, per lane for drums). Exit 1 when they
+    /// differ.
+    Diff { a: PathBuf, b: PathBuf },
     /// Rewrite leadsheet text in canonical form. Document-canonical:
     /// hand-authored structure (pattern ids, multi-bar patterns, direct
     /// bars, labels) survives — never reinterprets a note.
@@ -264,6 +268,17 @@ fn main() -> Result<()> {
                     }
                     std::process::exit(1);
                 }
+            }
+        }
+        Cmd::Diff { a, b } => {
+            let da = leadsheet_core::parse::parse_document(&std::fs::read_to_string(&a)?)?;
+            let db = leadsheet_core::parse::parse_document(&std::fs::read_to_string(&b)?)?;
+            let report = leadsheet_core::diff::diff(&da, &db);
+            if report.is_empty() {
+                eprintln!("identical");
+            } else {
+                print!("{report}");
+                std::process::exit(1);
             }
         }
         Cmd::Fmt { input, output } => {

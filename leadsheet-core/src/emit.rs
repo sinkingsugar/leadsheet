@@ -43,7 +43,7 @@ use std::fmt::Write;
 
 /// Spell one voice: canonical tuplet grouping (idempotent — already-grouped
 /// tokens pass through), then token spelling.
-fn spell_voice(toks: &[Tok], flats: bool) -> String {
+pub(crate) fn spell_voice(toks: &[Tok], flats: bool) -> String {
     notation::detect_tuplets(toks.to_vec())
         .iter()
         .map(|t| emit_token_spelled(t, flats))
@@ -51,11 +51,11 @@ fn spell_voice(toks: &[Tok], flats: bool) -> String {
         .join(" ")
 }
 
-fn spell_melodic_bar(bar: &MelodicBar, flats: bool) -> String {
+pub(crate) fn spell_melodic_bar(bar: &MelodicBar, flats: bool) -> String {
     bar.voices.iter().map(|v| spell_voice(v, flats)).collect::<Vec<_>>().join(" & ")
 }
 
-fn spell_chordal_bar(cols: &[ChordCol], flats: bool) -> String {
+pub(crate) fn spell_chordal_bar(cols: &[ChordCol], flats: bool) -> String {
     cols.iter()
         .map(|c| match c {
             ChordCol::Sym(sym) => chord::symbol_to_string(sym, flats),
@@ -274,7 +274,7 @@ fn try_chordal(segs: &[Seg], bar_len: MusicalTime) -> Option<Vec<ChordCol>> {
 
 type Lanes = BTreeMap<u8, Vec<u8>>;
 
-fn lane_char(code: u8) -> char {
+pub(crate) fn lane_char(code: u8) -> char {
     match code {
         LANE_GHOST => 'o',
         LANE_HIT => 'x',

@@ -169,6 +169,99 @@ impl Document {
         })
     }
 
+    /// Structural preflight for host-built Documents (parse_document
+    /// output is valid by construction). Checks everything emission and
+    /// resolution assume: reference integrity, bar sums, lane shapes,
+    /// and header sanity — including that text fields can't break the
+    /// emitted syntax (decision B3).
+    pub fn validate(&self) -> Result<(), Error> {
+        validate_header(&self.header)?;
+        let cpb = self.header.cells_per_bar();
+        let bar = self.header.bar_ticks();
+        let mut names = std::collections::HashSet::new();
+        for i in &self.instruments {
+            if i.name.is_empty()
+                || i.name.contains(|c: char| c.is_whitespace() || "::@*|~".contains(c))
+            {
+                return Err(doc_err(format!("instrument name {:?} would break emission", i.name)));
+            }
+            if !names.insert(&i.name) {
+                return Err(doc_err(format!("duplicate instrument {:?}", i.name)));
+            }
+        }
+        let mut ids = std::collections::HashSet::new();
+        for (idx, p) in self.patterns.iter().enumerate() {
+            if !ids.insert(p.id) {
+                return Err(doc_err(format!("duplicate pattern P{}", p.id)));
+            }
+            if p.track >= self.instruments.len() {
+                return Err(doc_err(format!("P{}: track {} out of range", p.id, p.track)));
+            }
+            let is_drums = self.instruments[p.track].is_drums;
+            if matches!(p.body, PatternBody::Drums(_)) != is_drums {
+                return Err(doc_err(format!("P{}: body kind does not match the instrument", p.id)));
+            }
+            if let Some(kin) = p.kin
+                && !self.patterns[..idx].iter().any(|q| q.id == kin)
+            {
+                return Err(doc_err(format!("P{}: kin P{kin} is not defined earlier", p.id)));
+            }
+            validate_body(&p.body, cpb, bar, &self.patterns[..idx], format!("P{}", p.id))?;
+        }
+        let mut total_bars = 0u64;
+        for item in &self.timeline {
+            match item {
+                TimelineItem::Row(row) => {
+                    if row.reps == 0 {
+                        return Err(doc_err("row repeats must be >= 1".into()));
+                    }
+                    if let Some(l) = &row.label
+                        && l.contains(['\n', '[', ']'])
+                    {
+                        return Err(doc_err(format!("row label {l:?} would break emission")));
+                    }
+                    let mut unit = 1u32;
+                    for id in &row.stack {
+                        let p = self
+                            .pattern(*id)
+                            .ok_or_else(|| doc_err(format!("unknown pattern P{id} in a row")))?;
+                        unit = unit.max(p.body.n_bars());
+                    }
+                    for id in &row.stack {
+                        let len = self.pattern(*id).unwrap().body.n_bars();
+                        if len != 1 && len != unit {
+                            return Err(doc_err(format!(
+                                "P{id} is {len} bars but its row unit is {unit}"
+                            )));
+                        }
+                    }
+                    total_bars += row.reps as u64 * unit as u64;
+                }
+                TimelineItem::Direct(d) => {
+                    if d.bar == 0 {
+                        return Err(doc_err("direct bars start at 1".into()));
+                    }
+                    if d.track >= self.instruments.len() {
+                        return Err(doc_err(format!("b{}: track out of range", d.bar)));
+                    }
+                    if matches!(d.body, PatternBody::Drums(_)) != self.instruments[d.track].is_drums
+                    {
+                        return Err(doc_err(format!(
+                            "b{}: body kind does not match the instrument",
+                            d.bar
+                        )));
+                    }
+                    validate_body(&d.body, cpb, bar, &self.patterns, format!("b{}", d.bar))?;
+                    total_bars = total_bars.max(d.bar as u64 + d.body.n_bars() as u64 - 1);
+                }
+            }
+        }
+        if total_bars > 100_000 {
+            return Err(doc_err(format!("{total_bars} bars is beyond the 100000-bar limit")));
+        }
+        Ok(())
+    }
+
     /// Compile to a flat, tick-placed [`QSong`].
     ///
     /// Documents built by [`crate::parse::parse_document`] are already
@@ -303,6 +396,178 @@ fn merge_variant_lanes(
         merged.push((*pitch, cells.clone()));
     }
     Ok(merged)
+}
+
+impl QSong {
+    /// Structural preflight for host-built songs (quantizer/resolver
+    /// output is valid by construction): header sanity, positive
+    /// durations, drum hits on the 16th grid with stroke digits 1..=4,
+    /// and no notes beyond `n_bars` (emission silently drops those).
+    pub fn validate(&self) -> Result<(), Error> {
+        validate_header(&Header {
+            name: self.name.clone(),
+            bpm: self.bpm,
+            meter: self.meter,
+            key: self.key,
+            swing: self.swing,
+        })?;
+        let end = self.bar_ticks() * self.n_bars as i64;
+        for t in &self.tracks {
+            for n in &t.notes {
+                if n.dur <= MusicalTime::ZERO || n.onset < MusicalTime::ZERO {
+                    return Err(doc_err(format!("{}: non-positive time on a note", t.name)));
+                }
+                if t.is_drums {
+                    if n.onset.try_as_sixteenths().is_none() {
+                        return Err(doc_err(format!("{}: drum hit off the 16th grid", t.name)));
+                    }
+                    if !(1..=4).contains(&n.strokes) {
+                        return Err(doc_err(format!("{}: stroke digit out of range", t.name)));
+                    }
+                } else if n.strokes != 1 {
+                    return Err(doc_err(format!("{}: melodic notes have strokes = 1", t.name)));
+                }
+                let extent = if t.is_drums { MusicalTime::from_sixteenths(1) } else { n.dur };
+                if n.onset + extent > end {
+                    return Err(doc_err(format!(
+                        "{}: a note ends past n_bars (emission would drop it)",
+                        t.name
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_header(h: &Header) -> Result<(), Error> {
+    if !h.bpm.is_finite() || h.bpm <= 0.0 {
+        return Err(doc_err(format!("bad tempo {}", h.bpm)));
+    }
+    // MIDI tempo is 24-bit µs/quarter; keep it representable.
+    let us = 60e6 / h.bpm;
+    if !(1.0..=16_777_215.0).contains(&us) {
+        return Err(doc_err(format!("tempo {} is outside the MIDI-representable range", h.bpm)));
+    }
+    if h.meter.1 != 4 && h.meter.1 != 8 {
+        return Err(doc_err(format!("unsupported meter {}/{}", h.meter.0, h.meter.1)));
+    }
+    if h.meter.0 == 0 || h.meter.0 > 64 {
+        return Err(doc_err(format!("meter numerator {} out of range (1..=64)", h.meter.0)));
+    }
+    if let Some(sw) = h.swing
+        && (!(50..=75).contains(&sw.percent) || (sw.level != 8 && sw.level != 16))
+    {
+        return Err(doc_err("bad swing (level 8/16, percent 50..=75)".into()));
+    }
+    if h.name.contains("tempo:") || h.name.contains('\n') {
+        return Err(doc_err(format!("song name {:?} would break emission", h.name)));
+    }
+    Ok(())
+}
+
+fn validate_body(
+    body: &PatternBody,
+    cpb: u32,
+    bar: MusicalTime,
+    earlier: &[PatternDef],
+    who: String,
+) -> Result<(), Error> {
+    match body {
+        PatternBody::Melodic(bars) => {
+            if bars.is_empty() {
+                return Err(doc_err(format!("{who}: a body needs at least one bar")));
+            }
+            for mb in bars {
+                for voice in &mb.voices {
+                    let mut sum = 0i64;
+                    for tok in voice {
+                        validate_tok(tok, &who)?;
+                        sum = sum.saturating_add(tok.dur().ticks());
+                    }
+                    if sum != bar.ticks() && sum != 0 {
+                        return Err(doc_err(format!(
+                            "{who}: a voice covers {sum} of {} ticks",
+                            bar.ticks()
+                        )));
+                    }
+                }
+            }
+        }
+        PatternBody::Chordal(bars) => {
+            if bars.is_empty() {
+                return Err(doc_err(format!("{who}: a body needs at least one bar")));
+            }
+            for cols in bars {
+                if cols.len() != (cpb / 4) as usize {
+                    return Err(doc_err(format!(
+                        "{who}: chord bar has {} columns, expected {}",
+                        cols.len(),
+                        cpb / 4
+                    )));
+                }
+                let mut have = false;
+                for c in cols {
+                    match c {
+                        ChordCol::Sym(sym) => {
+                            if chord::voicing(sym).is_none() {
+                                return Err(doc_err(format!("{who}: unvoicable chord symbol")));
+                            }
+                            have = true;
+                        }
+                        ChordCol::Hold if !have => {
+                            return Err(doc_err(format!("{who}: hold with no chord before it")));
+                        }
+                        ChordCol::Hold => {}
+                        ChordCol::Rest => have = false,
+                    }
+                }
+            }
+        }
+        PatternBody::Drums(d) => {
+            if let Some(base) = d.variant_base {
+                let ok =
+                    earlier.iter().any(|p| p.id == base && matches!(p.body, PatternBody::Drums(_)));
+                if !ok {
+                    return Err(doc_err(format!(
+                        "{who}: variant base P{base} is not an earlier drum pattern"
+                    )));
+                }
+            }
+            for (_, cells) in &d.lanes {
+                if cells.len() != cpb as usize {
+                    return Err(doc_err(format!(
+                        "{who}: lane has {} cells, expected {cpb}",
+                        cells.len()
+                    )));
+                }
+                if cells.iter().any(|c| *c > LANE_D4) {
+                    return Err(doc_err(format!("{who}: bad lane cell code")));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_tok(tok: &Tok, who: &str) -> Result<(), Error> {
+    if tok.dur() <= MusicalTime::ZERO {
+        return Err(doc_err(format!("{who}: non-positive duration")));
+    }
+    if let Tok::Tuplet { n, members, .. } = tok {
+        if !(2..=24).contains(n) || members.len() != *n as usize {
+            return Err(doc_err(format!("{who}: malformed tuplet")));
+        }
+        if members.iter().any(|m| matches!(m, Tok::Tuplet { .. })) {
+            return Err(doc_err(format!("{who}: tuplets cannot nest")));
+        }
+    }
+    if let Tok::Chord { pitches, .. } = tok
+        && pitches.is_empty()
+    {
+        return Err(doc_err(format!("{who}: empty chord")));
+    }
+    Ok(())
 }
 
 fn doc_err(message: String) -> Error {
