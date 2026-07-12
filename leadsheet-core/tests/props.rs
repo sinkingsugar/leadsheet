@@ -32,7 +32,7 @@
 //! The original failing seeds stay pinned in `props.proptest-regressions`;
 //! the named reproducers at the bottom are the minimal cases for 1 and 2.
 
-use leadsheet_core::grid::{QNote, QSong, QTrack, QuantizeOptions, Swing};
+use leadsheet_core::grid::{MusicalTime, QNote, QSong, QTrack, QuantizeOptions, Swing};
 use leadsheet_core::key::Key;
 use leadsheet_core::{chord, emit, ingest, metrics, parse, render};
 use proptest::prelude::*;
@@ -204,25 +204,32 @@ fn assemble(cfg: GenCfg, t: &TrackGen, idx: usize, cpb: u32, n_bars: u32) -> QTr
         for ev in tpl {
             let cell = bar as u32 * cpb + ev.onset;
             let vel = if cfg.bucketed_vels { t.bucket } else { ev.vel };
-            let dur = if t.is_drums { ev.dur } else { ev.dur.min(total - cell).max(1) };
             for &p in &ev.pitches {
-                notes.push(QNote { pitch: p, cell, dur_cells: dur, vel });
+                if t.is_drums {
+                    // ev.dur is the stroke digit; the hit occupies one cell.
+                    let mut hit = QNote::from_cells(p, cell, 1, vel);
+                    hit.strokes = ev.dur as u8;
+                    notes.push(hit);
+                } else {
+                    let dur = ev.dur.min(total - cell).max(1);
+                    notes.push(QNote::from_cells(p, cell, dur, vel));
+                }
             }
         }
     }
     // Keep-first per pitch: no same-pitch overlaps (drums: one hit per cell).
-    notes.sort_by_key(|n| (n.pitch, n.cell, n.dur_cells));
-    let mut last_end: HashMap<u8, u32> = HashMap::new();
+    notes.sort_by_key(|n| (n.pitch, n.onset, n.dur));
+    let mut last_end: HashMap<u8, MusicalTime> = HashMap::new();
     let mut kept: Vec<QNote> = Vec::new();
     for n in notes {
-        let end = last_end.entry(n.pitch).or_insert(0);
-        let extent = if t.is_drums { 1 } else { n.dur_cells };
-        if n.cell >= *end {
-            *end = n.cell + extent;
+        let end = last_end.entry(n.pitch).or_insert(MusicalTime::ZERO);
+        let extent = if t.is_drums { MusicalTime::from_sixteenths(1) } else { n.dur };
+        if n.onset >= *end {
+            *end = n.onset + extent;
             kept.push(n);
         }
     }
-    kept.sort_by(|a, b| a.cell.cmp(&b.cell).then(a.pitch.cmp(&b.pitch)));
+    kept.sort_by(|a, b| a.onset.cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
     QTrack { name: format!("t{idx}"), program: t.program, is_drums: t.is_drums, notes: kept }
 }
 
@@ -339,7 +346,7 @@ fn assert_canonical(q: &QSong) {
 /// Second generation splits them into `E16 & E16-`.
 #[test]
 fn dup_pitch_tied_chord_is_canonical() {
-    let n = |cell: u32, dur: u32| QNote { pitch: 64, cell, dur_cells: dur, vel: 96 };
+    let n = |cell: u32, dur: u32| QNote::from_cells(64, cell, dur, 96);
     assert_canonical(&one_track(vec![n(0, 20), n(0, 20)], 2));
 }
 
@@ -347,6 +354,6 @@ fn dup_pitch_tied_chord_is_canonical() {
 /// tie registration; the tie never joins and gen-2 drops the `-`.
 #[test]
 fn same_pitch_overlap_tie_is_canonical() {
-    let n = |cell: u32, dur: u32| QNote { pitch: 60, cell, dur_cells: dur, vel: 96 };
+    let n = |cell: u32, dur: u32| QNote::from_cells(60, cell, dur, 96);
     assert_canonical(&one_track(vec![n(0, 20), n(4, 4)], 2));
 }

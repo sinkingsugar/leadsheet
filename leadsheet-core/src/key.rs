@@ -50,7 +50,7 @@ pub fn detect(q: &QSong) -> Option<Key> {
     let mut hist = [0.0f64; 12];
     for t in q.tracks.iter().filter(|t| !t.is_drums) {
         for n in &t.notes {
-            hist[(n.pitch % 12) as usize] += n.dur_cells as f64;
+            hist[(n.pitch % 12) as usize] += n.dur.ticks() as f64;
         }
     }
     if hist.iter().sum::<f64>() <= 0.0 {

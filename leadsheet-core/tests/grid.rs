@@ -119,7 +119,7 @@ fn assert_grid_recovery(s: &SynthSong, bpm_expected: f64) {
         }
         let mut got_by_pitch: std::collections::HashMap<u8, Vec<u32>> = Default::default();
         for n in &track.notes {
-            got_by_pitch.entry(n.pitch).or_default().push(n.cell);
+            got_by_pitch.entry(n.pitch).or_default().push(n.cell());
         }
         for (pitch, mut tv) in true_by_pitch {
             let mut gv = got_by_pitch
@@ -167,7 +167,7 @@ fn declared_tempo_is_exact() {
     assert!(report.max_abs_residual_ms < 1e-6);
     for (track, truth) in q.tracks.iter().zip(&s.truth) {
         for (n, &(true_cell, _)) in track.notes.iter().zip(truth) {
-            assert_eq!(n.cell, true_cell);
+            assert_eq!(n.cell(), true_cell);
         }
     }
     assert_eq!(q.n_bars, 8);
@@ -275,7 +275,7 @@ fn detects_three_four() {
     // Downbeat on the bar line: bass onsets at cell ≡ 0 (mod 12).
     let bass = &q.tracks[0];
     let on_downbeat =
-        bass.notes.iter().filter(|n| n.cell % 12 == 0).count() as f64 / bass.notes.len() as f64;
+        bass.notes.iter().filter(|n| n.cell() % 12 == 0).count() as f64 / bass.notes.len() as f64;
     assert!(on_downbeat > 0.9, "downbeat rate {on_downbeat:.2}");
 }
 
@@ -365,7 +365,7 @@ fn quantizer_never_drops_notes() {
     };
     let (q, _) = quantize(&song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
     assert_eq!(q.tracks[0].notes.len(), 300);
-    assert!(q.tracks[0].notes.iter().all(|n| n.dur_cells >= 1));
-    let max_end = q.tracks[0].notes.iter().map(|n| n.cell + n.dur_cells).max().unwrap();
+    assert!(q.tracks[0].notes.iter().all(|n| n.dur_cells() >= 1));
+    let max_end = q.tracks[0].notes.iter().map(|n| n.cell() + n.dur_cells()).max().unwrap();
     assert!(q.n_bars * q.cells_per_bar() >= max_end);
 }

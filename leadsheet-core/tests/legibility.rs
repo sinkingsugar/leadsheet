@@ -5,7 +5,7 @@ use leadsheet_core::grid::{QNote, QSong, QTrack, QuantizeOptions};
 use leadsheet_core::{emit, ingest, key, metrics, parse, render};
 
 fn n(pitch: u8, cell: u32, dur: u32) -> QNote {
-    QNote { pitch, cell, dur_cells: dur, vel: 96 }
+    QNote::from_cells(pitch, cell, dur, 96)
 }
 
 /// A little band: piano comping canonical triads (chord mode), a spread
@@ -64,13 +64,14 @@ fn band_song(key_name: Option<&str>) -> QSong {
     }
 }
 
-type Structural = Vec<(String, Vec<(u8, u32, u32)>)>;
+type Structural =
+    Vec<(String, Vec<(u8, leadsheet_core::grid::MusicalTime, leadsheet_core::grid::MusicalTime)>)>;
 
 fn structural(q: &QSong) -> Structural {
     q.tracks
         .iter()
         .map(|t| {
-            let mut ns: Vec<_> = t.notes.iter().map(|x| (x.pitch, x.cell, x.dur_cells)).collect();
+            let mut ns: Vec<_> = t.notes.iter().map(|x| (x.pitch, x.onset, x.dur)).collect();
             ns.sort_unstable();
             (t.name.clone(), ns)
         })
@@ -258,7 +259,7 @@ fn melodic_kinship_is_informational() {
 
 #[test]
 fn dynamics_emit_and_roundtrip() {
-    let nv = |pitch: u8, cell: u32, dur: u32, vel: u8| QNote { pitch, cell, dur_cells: dur, vel };
+    let nv = |pitch: u8, cell: u32, dur: u32, vel: u8| QNote::from_cells(pitch, cell, dur, vel);
     let q = QSong {
         name: "dyn".into(),
         bpm: 100.0,
@@ -335,8 +336,12 @@ arrangement:
 ";
     let q = parse::parse(text).unwrap();
     let drums = &q.tracks[0];
-    let strokes: Vec<(u32, u32)> =
-        drums.notes.iter().filter(|n| n.pitch == 38).map(|n| (n.cell, n.dur_cells)).collect();
+    let strokes: Vec<(u32, u32)> = drums
+        .notes
+        .iter()
+        .filter(|n| n.pitch == 38)
+        .map(|n| (n.cell(), n.strokes as u32))
+        .collect();
     assert_eq!(strokes, [(4, 2), (6, 2), (12, 3), (13, 3), (14, 4), (15, 4)]);
     assert_eq!(q.n_bars, 1, "stroke counts are not extents");
     // Canonical emit reproduces the digits.
@@ -404,5 +409,5 @@ b2 p* | . z G7 . |
 b1 p* | Dm7 . . . |
 ";
     let q = parse::parse(text).unwrap();
-    assert!(q.tracks[0].notes.iter().all(|x| x.dur_cells == 16));
+    assert!(q.tracks[0].notes.iter().all(|x| x.dur_cells() == 16));
 }

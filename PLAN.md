@@ -110,7 +110,12 @@ byte-for-byte vs. Phase 1.
 
 Prerequisite for melodic 32nds, triplets, grace notes — do it once.
 
-- [ ] Internal time base moves from 16th-cells to **ticks: 960 per beat**
+**3a (clock internals) DONE 2026-07-12** — see DESIGN-960.md. Zero format
+change, corpus byte-identical without regeneration, Matrix.mid compress
+output byte-identical, roundtrip F1 unchanged through the 960 PPQ render.
+Remaining items below are 3b (syntax, gated on the bake-off).
+
+- [x] Internal time base moves from 16th-cells to **ticks: 960 per beat**
       — the industry-converged resolution (Ableton Live, Pro Tools,
       modern Logic). (`const TICKS_PER_BEAT`, wrapped in a `MusicalTime`
       newtype — the number appears in ONE place, is never serialized, and
@@ -121,11 +126,11 @@ Prerequisite for melodic 32nds, triplets, grace notes — do it once.
       written at 960 PPQ: 1 internal tick = 1 MIDI tick, no conversion,
       no rounding, ever. Integer `i64` math only; no floats in semantic
       positions. [DECIDED with Gio: 960, industry alignment]
-- [ ] **Feel never spends resolution**: ticks encode *notated* positions
+- [x] **Feel never spends resolution**: ticks encode *notated* positions
       only. Swing stays a render-time property; µtiming stays sidecar
       material. This keeps the tick base about what's writable, not
       what's playable.
-- [ ] Fix the `dur_cells` overload: drums get an explicit
+- [x] Fix the `dur_cells` overload: drums get an explicit
       `strokes: u8` (subdivision count) separate from duration; melodic
       duration becomes ticks. Emission of existing files byte-identical.
 - [ ] Tuplets live in the IR as **exact semantic objects** (`played: N,

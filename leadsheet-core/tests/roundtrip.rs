@@ -11,7 +11,7 @@ use leadsheet_core::{emit, parse, render};
 /// voices, ties across bars (incl. a 3-bar note), drums, gaps, and a
 /// duplicate simultaneous note.
 fn tricky_qsong() -> QSong {
-    let n = |pitch: u8, cell: u32, dur_cells: u32| QNote { pitch, cell, dur_cells, vel: 96 };
+    let n = |pitch: u8, cell: u32, dur_cells: u32| QNote::from_cells(pitch, cell, dur_cells, 96);
     QSong {
         name: "tricky".into(),
         bpm: 132.5,
@@ -52,13 +52,14 @@ fn tricky_qsong() -> QSong {
     }
 }
 
-type Structural = Vec<(String, Vec<(u8, u32, u32)>)>;
+type Structural =
+    Vec<(String, Vec<(u8, leadsheet_core::grid::MusicalTime, leadsheet_core::grid::MusicalTime)>)>;
 
 fn structural(q: &QSong) -> Structural {
     q.tracks
         .iter()
         .map(|t| {
-            let mut ns: Vec<_> = t.notes.iter().map(|n| (n.pitch, n.cell, n.dur_cells)).collect();
+            let mut ns: Vec<_> = t.notes.iter().map(|n| (n.pitch, n.onset, n.dur)).collect();
             ns.sort_unstable();
             (t.name.clone(), ns)
         })

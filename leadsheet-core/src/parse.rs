@@ -21,7 +21,7 @@
 use crate::chord;
 use crate::drums;
 use crate::error::{Diagnostic, Error};
-use crate::grid::{QNote, QSong, QTrack};
+use crate::grid::{MusicalTime, QNote, QSong, QTrack};
 use crate::key::Key;
 use crate::notation::{self, Mark, Tok, parse_token};
 use std::collections::HashMap;
@@ -231,16 +231,11 @@ impl Builder {
                     });
                     let idx = match open {
                         Some(idx) => {
-                            self.tracks[ti].notes[idx].dur_cells += dur;
+                            self.tracks[ti].notes[idx].dur += MusicalTime::from_sixteenths(dur);
                             idx
                         }
                         None => {
-                            self.tracks[ti].notes.push(QNote {
-                                pitch,
-                                cell: cursor,
-                                dur_cells: dur,
-                                vel,
-                            });
+                            self.tracks[ti].notes.push(QNote::from_cells(pitch, cursor, dur, vel));
                             self.tracks[ti].notes.len() - 1
                         }
                     };
@@ -277,7 +272,7 @@ impl Builder {
         let flush = |cur: &mut Option<(Vec<u8>, u32, u32)>, tracks: &mut Vec<QTrack>| {
             if let Some((pitches, start, dur)) = cur.take() {
                 for pitch in pitches {
-                    tracks[ti].notes.push(QNote { pitch, cell: start, dur_cells: dur, vel: base });
+                    tracks[ti].notes.push(QNote::from_cells(pitch, start, dur, base));
                 }
             }
         };
@@ -311,12 +306,10 @@ impl Builder {
                     LANE_D4 => (base, 4),
                     _ => continue,
                 };
-                self.tracks[ti].notes.push(QNote {
-                    pitch: *pitch,
-                    cell: bar_start + i as u32,
-                    dur_cells: strokes, // stroke count for drums, not an extent
-                    vel,
-                });
+                // One-shot on the 16th grid; the digit is a stroke count.
+                let mut hit = QNote::from_cells(*pitch, bar_start + i as u32, 1, vel);
+                hit.strokes = strokes;
+                self.tracks[ti].notes.push(hit);
             }
         }
     }
@@ -825,13 +818,11 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         let opened = block.line;
         flush_block(block, &mut patterns, &mut b, cpb).map_err(|r| diag(opened, "", r))?;
     }
-    let mut max_end = 0u32;
+    let mut max_end = MusicalTime::ZERO;
     for t in &mut b.tracks {
-        t.notes.sort_by(|a, b| a.cell.cmp(&b.cell).then(a.pitch.cmp(&b.pitch)));
+        t.notes.sort_by(|a, b| a.onset.cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
         for n in &t.notes {
-            // Drum dur_cells is a stroke count inside one cell.
-            let extent = if t.is_drums { 1 } else { n.dur_cells };
-            max_end = max_end.max(n.cell + extent);
+            max_end = max_end.max(n.onset + n.dur);
         }
     }
     Ok(QSong {
@@ -840,7 +831,7 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         meter: header.meter,
         key: header.key,
         swing: header.swing,
-        n_bars: max_end.div_ceil(cpb).max(next_bar).max(max_bar),
+        n_bars: max_end.spans_ceil(MusicalTime::from_sixteenths(cpb)).max(next_bar).max(max_bar),
         tracks: b.tracks,
     })
 }

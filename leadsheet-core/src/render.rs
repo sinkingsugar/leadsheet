@@ -1,22 +1,30 @@
 //! QSong → standard MIDI file bytes. Closes the loop: text the LLM wrote
 //! becomes something you can hear (fluidsynth / SpessaSynth downstream).
+//!
+//! Written at 960 PPQ = [`grid::TICKS_PER_BEAT`]: 1 internal tick is
+//! 1 MIDI tick, no conversion, no rounding, ever.
 
-use crate::grid::{CELLS_PER_BEAT, QSong};
+use crate::grid::{MusicalTime, QSong, TICKS_PER_BEAT};
 use midly::num::{u4, u7, u15, u24, u28};
 use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
 
-pub const PPQ: u16 = 480;
-pub const TICKS_PER_CELL: u32 = PPQ as u32 / CELLS_PER_BEAT; // 120
+pub const PPQ: u16 = TICKS_PER_BEAT as u16;
 
-/// Swing displacement in ticks for a note starting at `cell`.
-/// 8th swing pushes offbeat 8ths (cell ≡ 2 mod 4) toward the triplet;
-/// 16th swing pushes offbeat 16ths (cell ≡ 1 mod 2).
-fn swing_delta(swing: Option<crate::grid::Swing>, cell: u32) -> u32 {
+/// Swing displacement in ticks for a note starting at `onset`. Only exact
+/// grid positions swing: offbeat 8ths (half-beat) or offbeat 16ths
+/// (quarter-beat), depending on the level. Render-time feel — notated
+/// positions stay straight, and ±1 tick of integer truncation is fine.
+fn swing_delta(swing: Option<crate::grid::Swing>, onset: MusicalTime) -> i64 {
     let Some(sw) = swing else { return 0 };
-    match sw.level {
-        16 if cell % 2 == 1 => sw.percent as u32 * 2 * TICKS_PER_CELL / 100 - TICKS_PER_CELL,
-        8 if cell % 4 == 2 => sw.percent as u32 * 4 * TICKS_PER_CELL / 100 - 2 * TICKS_PER_CELL,
-        _ => 0,
+    let beat = TICKS_PER_BEAT;
+    let (span, offbeat) = match sw.level {
+        16 => (beat / 2, beat / 4),
+        _ => (beat, beat / 2),
+    };
+    if onset.ticks().rem_euclid(span) == offbeat {
+        sw.percent as i64 * span / 100 - offbeat
+    } else {
+        0
     }
 }
 
@@ -59,18 +67,15 @@ pub fn render(q: &QSong) -> Vec<u8> {
         // (tick, on_after_off ordering key, message)
         let mut events: Vec<(u32, u8, MidiMessage)> = Vec::with_capacity(track.notes.len() * 2);
         for n in &track.notes {
-            let start = n.cell * TICKS_PER_CELL + swing_delta(q.swing, n.cell);
-            // For drums, dur_cells is a stroke count: the cell subdivides
-            // into that many hits (drag / triplet / buzz).
-            let strokes = if track.is_drums { n.dur_cells.clamp(1, 4) } else { 1 };
-            let step = TICKS_PER_CELL / strokes;
+            let start = (n.onset.ticks() + swing_delta(q.swing, n.onset)).max(0) as u32;
+            // Drum stroke digits subdivide the note into that many hits
+            // (drag / triplet / buzz).
+            let strokes = if track.is_drums { n.strokes.clamp(1, 4) as u32 } else { 1 };
+            let step = n.dur.ticks() as u32 / strokes;
             for k in 0..strokes {
                 let on = start + k * step;
-                let off = if track.is_drums {
-                    on + step / 2
-                } else {
-                    (n.cell + n.dur_cells) * TICKS_PER_CELL
-                };
+                let off =
+                    if track.is_drums { on + step / 2 } else { (n.onset + n.dur).ticks() as u32 };
                 events.push((
                     on,
                     1,

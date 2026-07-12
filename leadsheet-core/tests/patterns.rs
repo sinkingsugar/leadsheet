@@ -8,7 +8,7 @@ use leadsheet_core::{emit, ingest, metrics, parse, render};
 /// 68 bars of verse/chorus pop structure: intro (bass+drums), verse x16,
 /// chorus x16 (adds lead), verse, chorus, 4 silent bars, outro chord.
 fn structured_song() -> QSong {
-    let n = |pitch: u8, cell: u32, dur: u32| QNote { pitch, cell, dur_cells: dur, vel: 96 };
+    let n = |pitch: u8, cell: u32, dur: u32| QNote::from_cells(pitch, cell, dur, 96);
     let mut bass = Vec::new();
     let mut drums = Vec::new();
     let mut lead = Vec::new();
@@ -75,13 +75,14 @@ fn structured_song() -> QSong {
     }
 }
 
-type Structural = Vec<(String, Vec<(u8, u32, u32)>)>;
+type Structural =
+    Vec<(String, Vec<(u8, leadsheet_core::grid::MusicalTime, leadsheet_core::grid::MusicalTime)>)>;
 
 fn structural(q: &QSong) -> Structural {
     q.tracks
         .iter()
         .map(|t| {
-            let mut ns: Vec<_> = t.notes.iter().map(|n| (n.pitch, n.cell, n.dur_cells)).collect();
+            let mut ns: Vec<_> = t.notes.iter().map(|n| (n.pitch, n.onset, n.dur)).collect();
             ns.sort_unstable();
             (t.name.clone(), ns)
         })
@@ -164,11 +165,11 @@ arrangement:
     assert_eq!(q.n_bars, 5);
     let notes = &q.tracks[0].notes;
     assert_eq!(notes.len(), 4);
-    assert_eq!((notes[0].pitch, notes[0].cell, notes[0].dur_cells), (48, 0, 16));
-    assert_eq!(notes[1].cell, 16);
+    assert_eq!((notes[0].pitch, notes[0].cell(), notes[0].dur_cells()), (48, 0, 16));
+    assert_eq!(notes[1].cell(), 16);
     // Silent bars 3-4, then P7 in bar 5.
-    assert_eq!((notes[2].pitch, notes[2].cell), (50, 64));
-    assert_eq!((notes[3].pitch, notes[3].cell), (52, 72));
+    assert_eq!((notes[2].pitch, notes[2].cell()), (50, 64));
+    assert_eq!((notes[3].pitch, notes[3].cell()), (52, 72));
 }
 
 #[test]
@@ -189,10 +190,10 @@ arrangement:
     assert_eq!(q.n_bars, 10, "2 reps x 4-bar unit + 2-bar P3");
     let bass = &q.tracks[0];
     // P1 (A,, = A2 = MIDI 45) repeats every bar of both units: 8 whole notes.
-    assert_eq!(bass.notes.iter().filter(|n| n.pitch == 45 && n.dur_cells == 16).count(), 8);
+    assert_eq!(bass.notes.iter().filter(|n| n.pitch == 45 && n.dur_cells() == 16).count(), 8);
     // P3's tie spans its internal bar line: C,8 then D,16 then E,8.
     let d = bass.notes.iter().find(|n| n.pitch == 50).unwrap();
-    assert_eq!((d.cell, d.dur_cells), (8 * 16 + 8, 16), "tie joined inside pattern");
+    assert_eq!((d.cell(), d.dur_cells()), (8 * 16 + 8, 16), "tie joined inside pattern");
     // Piano: Am F C G Am cycle twice = 4 chords x 3 notes x 2 reps.
     assert_eq!(q.tracks[1].notes.len(), 30);
     // Mismatched multi-bar lengths in one stack are rejected.
@@ -234,5 +235,5 @@ arrangement:
     let q = parse::parse(text).unwrap();
     let notes = &q.tracks[0].notes;
     assert_eq!(notes.len(), 1, "{notes:?}");
-    assert_eq!(notes[0].dur_cells, 64);
+    assert_eq!(notes[0].dur_cells(), 64);
 }

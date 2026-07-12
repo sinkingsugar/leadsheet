@@ -1,20 +1,140 @@
-//! Layer 1b — quantization: seconds-domain notes → grid-aligned events.
+//! Layer 1b — the clock, and quantization: seconds-domain notes →
+//! grid-aligned events.
 //!
-//! The grid is 16th cells (4 per beat). µtiming residuals are measured and
-//! reported but discarded (lossy by design; a sidecar is a later option).
+//! Internal time is integer **ticks at 960 per beat** ([`MusicalTime`]) —
+//! the constant lives here and nowhere else, and is never serialized:
+//! `.ls` text speaks 16th cells (240 ticks), and MIDI is rendered at
+//! 960 PPQ so 1 internal tick = 1 MIDI tick. Quantization still snaps to
+//! the 16th grid (inference resolution is unchanged; ticks buy authoring
+//! resolution). µtiming residuals are measured and reported but discarded
+//! (lossy by design; a sidecar is a later option). `MusicalTime` is score
+//! position, not wall time: the only tick↔seconds conversions live in
+//! quantization (in) and render (out), so a future tempo map replaces
+//! those two spots without another clock migration.
 
 use crate::model::{RawNote, RawSong};
 use crate::tempo;
+use std::ops::{Add, AddAssign, Div, Mul, Rem, Sub};
 
 pub const CELLS_PER_BEAT: u32 = 4;
+pub const TICKS_PER_BEAT: i64 = 960;
+/// One 16th cell — the text format's duration unit.
+pub const TICKS_PER_SIXTEENTH: i64 = TICKS_PER_BEAT / CELLS_PER_BEAT as i64;
 
-/// A note on the grid. `cell` is a global 16th index: bar = cell / 16 in 4/4.
+/// A score position or duration in ticks (960 per beat). Integer math
+/// only; never leaves the crate as a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct MusicalTime(pub i64);
+
+impl MusicalTime {
+    pub const ZERO: MusicalTime = MusicalTime(0);
+
+    pub fn from_sixteenths(n: u32) -> MusicalTime {
+        MusicalTime(n as i64 * TICKS_PER_SIXTEENTH)
+    }
+
+    pub fn from_beats(n: u32) -> MusicalTime {
+        MusicalTime(n as i64 * TICKS_PER_BEAT)
+    }
+
+    /// Ticks → 16th cells, for text spelling. Exact by construction until
+    /// sub-16th syntax exists (tuplets/32nds are Phase 3b).
+    pub fn as_sixteenths(self) -> u32 {
+        debug_assert!(
+            self.0 % TICKS_PER_SIXTEENTH == 0,
+            "sub-16th time ({} ticks) cannot be spelled yet",
+            self.0
+        );
+        (self.0 / TICKS_PER_SIXTEENTH) as u32
+    }
+
+    pub fn ticks(self) -> i64 {
+        self.0
+    }
+
+    /// How many whole `span`s cover this time (ceiling division; both
+    /// values non-negative).
+    pub fn spans_ceil(self, span: MusicalTime) -> u32 {
+        debug_assert!(self.0 >= 0 && span.0 > 0);
+        ((self.0 + span.0 - 1) / span.0).max(0) as u32
+    }
+}
+
+impl Add for MusicalTime {
+    type Output = MusicalTime;
+    fn add(self, rhs: MusicalTime) -> MusicalTime {
+        MusicalTime(self.0 + rhs.0)
+    }
+}
+
+impl AddAssign for MusicalTime {
+    fn add_assign(&mut self, rhs: MusicalTime) {
+        self.0 += rhs.0;
+    }
+}
+
+impl Sub for MusicalTime {
+    type Output = MusicalTime;
+    fn sub(self, rhs: MusicalTime) -> MusicalTime {
+        MusicalTime(self.0 - rhs.0)
+    }
+}
+
+impl Mul<i64> for MusicalTime {
+    type Output = MusicalTime;
+    fn mul(self, rhs: i64) -> MusicalTime {
+        MusicalTime(self.0 * rhs)
+    }
+}
+
+/// How many whole `rhs` spans fit (bar index, beat index, …).
+impl Div for MusicalTime {
+    type Output = i64;
+    fn div(self, rhs: MusicalTime) -> i64 {
+        self.0.div_euclid(rhs.0)
+    }
+}
+
+impl Rem for MusicalTime {
+    type Output = MusicalTime;
+    fn rem(self, rhs: MusicalTime) -> MusicalTime {
+        MusicalTime(self.0.rem_euclid(rhs.0))
+    }
+}
+
+/// A note on the grid: onset/duration in ticks, plus the drum stroke
+/// count (the lane digits `2`/`3`/`4` subdivide one cell into that many
+/// hits; always 1 for melodic notes and plain drum hits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QNote {
     pub pitch: u8,
-    pub cell: u32,
-    pub dur_cells: u32,
+    pub onset: MusicalTime,
+    pub dur: MusicalTime,
+    pub strokes: u8,
     pub vel: u8,
+}
+
+impl QNote {
+    /// Construct from the text format's units (16th cells).
+    pub fn from_cells(pitch: u8, cell: u32, dur_cells: u32, vel: u8) -> QNote {
+        QNote {
+            pitch,
+            onset: MusicalTime::from_sixteenths(cell),
+            dur: MusicalTime::from_sixteenths(dur_cells),
+            strokes: 1,
+            vel,
+        }
+    }
+
+    /// Onset in 16th cells (the text unit; exact for on-grid content).
+    pub fn cell(&self) -> u32 {
+        self.onset.as_sixteenths()
+    }
+
+    /// Duration in 16th cells (the text unit; exact for on-grid content).
+    pub fn dur_cells(&self) -> u32 {
+        self.dur.as_sixteenths()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -22,7 +142,7 @@ pub struct QTrack {
     pub name: String,
     pub program: u8,
     pub is_drums: bool,
-    /// Sorted by (cell, pitch).
+    /// Sorted by (onset, pitch).
     pub notes: Vec<QNote>,
 }
 
@@ -53,8 +173,14 @@ pub struct QSong {
 }
 
 impl QSong {
+    /// Bar length in the text format's unit (16th cells).
     pub fn cells_per_bar(&self) -> u32 {
         self.meter.0 * CELLS_PER_BEAT * 4 / self.meter.1
+    }
+
+    /// Bar length in ticks (exact for /4 and /8 denominators).
+    pub fn bar_ticks(&self) -> MusicalTime {
+        MusicalTime(self.meter.0 as i64 * TICKS_PER_BEAT * 4 / self.meter.1 as i64)
     }
 
     pub fn cell_sec(&self) -> f64 {
@@ -161,7 +287,7 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
     let mut residual_sum = 0.0f64;
     let mut residual_max = 0.0f64;
     let mut note_count = 0usize;
-    let mut max_end_cell = 0u32;
+    let mut max_end = MusicalTime::ZERO;
 
     let tracks = song
         .tracks
@@ -181,18 +307,19 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
                     // Drum hits are one-shots; their length carries no
                     // information (MuScriptor emits a fixed minimum anyway).
                     let dur_cells = if t.is_drums { 1 } else { end.saturating_sub(cell).max(1) };
-                    max_end_cell = max_end_cell.max(cell + dur_cells);
-                    QNote { pitch: n.pitch, cell, dur_cells, vel: n.vel }
+                    let q = QNote::from_cells(n.pitch, cell, dur_cells, n.vel);
+                    max_end = max_end.max(q.onset + q.dur);
+                    q
                 })
                 .collect();
-            notes.sort_by(|a: &QNote, b: &QNote| a.cell.cmp(&b.cell).then(a.pitch.cmp(&b.pitch)));
+            notes.sort_by(|a: &QNote, b: &QNote| a.onset.cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
             QTrack { name: t.name.clone(), program: t.program, is_drums: t.is_drums, notes }
         })
         .collect();
 
     let mut qsong =
         QSong { name: song.name.clone(), bpm, meter, key: None, swing: None, n_bars: 0, tracks };
-    qsong.n_bars = max_end_cell.div_ceil(qsong.cells_per_bar());
+    qsong.n_bars = max_end.spans_ceil(qsong.bar_ticks());
     qsong.key = crate::key::detect(&qsong);
 
     let report = QuantizeReport {

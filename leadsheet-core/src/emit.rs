@@ -26,7 +26,7 @@
 
 use crate::chord;
 use crate::drums;
-use crate::grid::{QSong, QTrack};
+use crate::grid::{MusicalTime, QSong, QTrack, TICKS_PER_BEAT};
 use crate::notation::{self, Tok, emit_token_spelled};
 use crate::pattern;
 use std::collections::BTreeMap;
@@ -34,8 +34,10 @@ use std::fmt::Write;
 
 /// A note fragment clipped to one bar.
 struct Seg {
-    cell: u32, // bar-relative
-    dur: u32,
+    onset: MusicalTime, // bar-relative
+    dur: MusicalTime,
+    /// Drum stroke digit (1 = plain hit); always 1 for melodic segments.
+    strokes: u8,
     pitch: u8,
     vel: u8,
     tie_in: bool,
@@ -54,9 +56,9 @@ fn base_velocity(segs: &[Seg], is_drums: bool) -> u8 {
     let mut votes: Vec<u8> = if is_drums {
         segs.iter().map(|s| s.vel).collect()
     } else {
-        let mut groups: BTreeMap<(u32, u32, bool), Vec<u8>> = BTreeMap::new();
+        let mut groups: BTreeMap<(MusicalTime, MusicalTime, bool), Vec<u8>> = BTreeMap::new();
         for s in segs {
-            groups.entry((s.cell, s.dur, s.tie_out)).or_default().push(s.vel);
+            groups.entry((s.onset, s.dur, s.tie_out)).or_default().push(s.vel);
         }
         groups
             .into_values()
@@ -71,17 +73,17 @@ fn base_velocity(segs: &[Seg], is_drums: bool) -> u8 {
 }
 
 /// Split a track's notes at bar boundaries: per-bar segment lists.
-/// Drum notes never span: their `dur_cells` is a stroke count (see
-/// [`crate::grid::QNote`]), carried through in `Seg::dur`.
-fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> {
+/// Drum notes never span (one-shots on the 16th grid).
+fn split_bars(track: &QTrack, bar_len: MusicalTime, n_bars: u32) -> Vec<Vec<Seg>> {
     let mut bars: Vec<Vec<Seg>> = (0..n_bars).map(|_| Vec::new()).collect();
     for (note, n) in track.notes.iter().enumerate() {
         if track.is_drums {
-            let bar = n.cell / cells_per_bar;
+            let bar = n.onset / bar_len;
             if let Some(slot) = bars.get_mut(bar as usize) {
                 slot.push(Seg {
-                    cell: n.cell - bar * cells_per_bar,
-                    dur: n.dur_cells,
+                    onset: n.onset % bar_len,
+                    dur: n.dur,
+                    strokes: n.strokes,
                     pitch: n.pitch,
                     vel: n.vel,
                     tie_in: false,
@@ -91,24 +93,25 @@ fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> 
             }
             continue;
         }
-        let end = n.cell + n.dur_cells;
-        let mut cell = n.cell;
-        while cell < end {
-            let bar = cell / cells_per_bar;
-            let bar_end = (bar + 1) * cells_per_bar;
+        let end = n.onset + n.dur;
+        let mut pos = n.onset;
+        while pos < end {
+            let bar = pos / bar_len;
+            let bar_end = bar_len * (bar + 1);
             let seg_end = end.min(bar_end);
             if let Some(slot) = bars.get_mut(bar as usize) {
                 slot.push(Seg {
-                    cell: cell - bar * cells_per_bar,
-                    dur: seg_end - cell,
+                    onset: pos - bar_len * bar,
+                    dur: seg_end - pos,
+                    strokes: 1,
                     pitch: n.pitch,
                     vel: n.vel,
-                    tie_in: cell > n.cell,
+                    tie_in: pos > n.onset,
                     tie_out: seg_end < end,
                     note,
                 });
             }
-            cell = seg_end;
+            pos = seg_end;
         }
     }
     bars
@@ -120,9 +123,9 @@ fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> 
 /// derives identical dynamics (marks are grouped exactly like
 /// [`bar_voices`] groups tokens).
 fn record_reconstructed_vels(segs: &[Seg], base: u8, recon: &mut [Option<u8>]) {
-    let mut groups: BTreeMap<(u32, u32, bool), Vec<&Seg>> = BTreeMap::new();
+    let mut groups: BTreeMap<(MusicalTime, MusicalTime, bool), Vec<&Seg>> = BTreeMap::new();
     for s in segs {
-        groups.entry((s.cell, s.dur, s.tie_out)).or_default().push(s);
+        groups.entry((s.onset, s.dur, s.tie_out)).or_default().push(s);
     }
     for group in groups.values() {
         let mut vels: Vec<u8> = group.iter().map(|s| s.vel).collect();
@@ -139,48 +142,49 @@ fn record_reconstructed_vels(segs: &[Seg], base: u8, recon: &mut [Option<u8>]) {
 
 /// Render one bar's segments as melodic voice strings (usually one voice).
 /// `base` is the bar's dynamic bucket; deviating notes get `>` / `~` marks.
-fn bar_voices(segs: &[Seg], cells_per_bar: u32, flats: bool, base: u8) -> Vec<String> {
+fn bar_voices(segs: &[Seg], bar_len: MusicalTime, flats: bool, base: u8) -> Vec<String> {
     // Segments sharing (onset, duration, tie) stack into one chord token.
-    let mut groups: BTreeMap<(u32, u32, bool), Vec<(u8, u8)>> = BTreeMap::new();
+    let mut groups: BTreeMap<(MusicalTime, MusicalTime, bool), Vec<(u8, u8)>> = BTreeMap::new();
     for s in segs {
-        groups.entry((s.cell, s.dur, s.tie_out)).or_default().push((s.pitch, s.vel));
+        groups.entry((s.onset, s.dur, s.tie_out)).or_default().push((s.pitch, s.vel));
     }
     // Greedy voice allocation: each group goes to the first voice that has
-    // already ended when the group starts.
+    // already ended when the group starts. Token durations are spelled in
+    // the text unit (16th cells).
     struct Voice {
-        end: u32,
+        end: MusicalTime,
         toks: Vec<Tok>,
     }
     let mut voices: Vec<Voice> = Vec::new();
-    for ((cell, dur, tie), mut notes) in groups {
+    for ((onset, dur, tie), mut notes) in groups {
         notes.sort_unstable();
         let mut vels: Vec<u8> = notes.iter().map(|(_, v)| *v).collect();
         vels.sort_unstable();
         let mark = notation::mark_for_vel(vels[(vels.len() - 1) / 2], base);
         let pitches: Vec<u8> = notes.iter().map(|(p, _)| *p).collect();
         let tok = if pitches.len() == 1 {
-            Tok::Note { pitch: pitches[0], dur, tie, mark }
+            Tok::Note { pitch: pitches[0], dur: dur.as_sixteenths(), tie, mark }
         } else {
-            Tok::Chord { pitches, dur, tie, mark }
+            Tok::Chord { pitches, dur: dur.as_sixteenths(), tie, mark }
         };
-        let voice = match voices.iter_mut().find(|v| v.end <= cell) {
+        let voice = match voices.iter_mut().find(|v| v.end <= onset) {
             Some(v) => v,
             None => {
-                voices.push(Voice { end: 0, toks: Vec::new() });
+                voices.push(Voice { end: MusicalTime::ZERO, toks: Vec::new() });
                 voices.last_mut().unwrap()
             }
         };
-        if cell > voice.end {
-            voice.toks.push(Tok::Rest { dur: cell - voice.end });
+        if onset > voice.end {
+            voice.toks.push(Tok::Rest { dur: (onset - voice.end).as_sixteenths() });
         }
         voice.toks.push(tok);
-        voice.end = cell + dur;
+        voice.end = onset + dur;
     }
     voices
         .into_iter()
         .map(|mut v| {
-            if v.end < cells_per_bar {
-                v.toks.push(Tok::Rest { dur: cells_per_bar - v.end });
+            if v.end < bar_len {
+                v.toks.push(Tok::Rest { dur: (bar_len - v.end).as_sixteenths() });
             }
             v.toks.iter().map(|t| emit_token_spelled(t, flats)).collect::<Vec<_>>().join(" ")
         })
@@ -189,36 +193,37 @@ fn bar_voices(segs: &[Seg], cells_per_bar: u32, flats: bool, base: u8) -> Vec<St
 
 /// Chord-mode body (`Am . F G7`) if — and only if — every onset group in
 /// the bar is a beat-aligned, uniformly-held, canonically-voiced chord.
-fn try_chordal(segs: &[Seg], cells_per_bar: u32, flats: bool) -> Option<String> {
+fn try_chordal(segs: &[Seg], bar_len: MusicalTime, flats: bool) -> Option<String> {
     if segs.is_empty() || segs.iter().any(|s| s.tie_in || s.tie_out) {
         return None;
     }
-    let mut groups: BTreeMap<u32, Vec<&Seg>> = BTreeMap::new();
+    let beat_len = MusicalTime(TICKS_PER_BEAT);
+    let mut groups: BTreeMap<MusicalTime, Vec<&Seg>> = BTreeMap::new();
     for s in segs {
-        groups.entry(s.cell).or_default().push(s);
+        groups.entry(s.onset).or_default().push(s);
     }
-    let onsets: Vec<u32> = groups.keys().copied().collect();
-    let beats = (cells_per_bar / 4) as usize;
+    let onsets: Vec<MusicalTime> = groups.keys().copied().collect();
+    let beats = (bar_len / beat_len) as usize;
     let mut columns: Vec<Option<String>> = vec![None; beats]; // None = rest/hold slot
     let mut covered = vec![false; beats];
     for (i, (&onset, group)) in groups.iter().enumerate() {
-        if onset % 4 != 0 {
+        if onset % beat_len != MusicalTime::ZERO {
             return None;
         }
         let dur = group[0].dur;
-        if dur % 4 != 0 || group.iter().any(|s| s.dur != dur) {
+        if dur % beat_len != MusicalTime::ZERO || group.iter().any(|s| s.dur != dur) {
             return None;
         }
-        let limit = onsets.get(i + 1).copied().unwrap_or(cells_per_bar);
+        let limit = onsets.get(i + 1).copied().unwrap_or(bar_len);
         if onset + dur > limit {
             return None; // overlaps the next chord (or the bar line)
         }
         let mut pitches: Vec<u8> = group.iter().map(|s| s.pitch).collect();
         pitches.sort_unstable();
         let sym = chord::detect(&pitches)?;
-        let beat = (onset / 4) as usize;
+        let beat = (onset / beat_len) as usize;
         columns[beat] = Some(chord::symbol_to_string(&sym, flats));
-        covered[beat..beat + (dur / 4) as usize].fill(true);
+        covered[beat..beat + (dur / beat_len) as usize].fill(true);
     }
     let cols: Vec<String> = columns
         .iter()
@@ -260,10 +265,10 @@ fn lane_char(code: u8) -> char {
 fn drum_lane_map(segs: &[Seg], cells_per_bar: u32, base: u8) -> Lanes {
     let mut lanes: Lanes = BTreeMap::new();
     for s in segs {
-        let code = match s.dur {
+        let code = match s.strokes {
             2 => LANE_D2,
             3 => LANE_D3,
-            d if d >= 4 => LANE_D4,
+            n if n >= 4 => LANE_D4,
             _ => match notation::mark_for_vel(s.vel, base) {
                 notation::Mark::Accent => LANE_ACCENT,
                 notation::Mark::Ghost => LANE_GHOST,
@@ -271,7 +276,7 @@ fn drum_lane_map(segs: &[Seg], cells_per_bar: u32, base: u8) -> Lanes {
             },
         };
         lanes.entry(s.pitch).or_insert_with(|| vec![LANE_EMPTY; cells_per_bar as usize])
-            [s.cell as usize] = code;
+            [s.onset.as_sixteenths() as usize] = code;
     }
     lanes
 }
@@ -414,13 +419,14 @@ pub fn emit(q: &QSong) -> String {
     out.push('\n');
 
     let cpb = q.cells_per_bar();
+    let bar_len = q.bar_ticks();
     let bodies: Vec<Vec<Option<Body>>> = q
         .tracks
         .iter()
         .map(|t| {
             // Reconstructed velocity per note (see record_reconstructed_vels).
             let mut recon: Vec<Option<u8>> = vec![None; t.notes.len()];
-            split_bars(t, cpb, q.n_bars)
+            split_bars(t, bar_len, q.n_bars)
                 .into_iter()
                 .map(|mut segs| {
                     if segs.is_empty() {
@@ -444,14 +450,14 @@ pub fn emit(q: &QSong) -> String {
                     } else if let Some(c) =
                         // Chord columns are quarter-note beats; only /4 meters.
                         (q.meter.1 == 4)
-                            .then(|| try_chordal(&segs, cpb, flats))
+                            .then(|| try_chordal(&segs, bar_len, flats))
                             .flatten()
                     {
                         Body::Chordal { base, text: c }
                     } else {
                         Body::Melodic {
                             base,
-                            text: bar_voices(&segs, cpb, flats, base).join(" & "),
+                            text: bar_voices(&segs, bar_len, flats, base).join(" & "),
                         }
                     })
                 })

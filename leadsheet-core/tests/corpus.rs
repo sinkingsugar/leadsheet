@@ -75,11 +75,11 @@ fn corpus_ls_is_canonical() {
 // Builders (regeneration only — deterministic, no RNG).
 
 fn n(pitch: u8, cell: u32, dur: u32) -> QNote {
-    QNote { pitch, cell, dur_cells: dur, vel: 96 }
+    QNote::from_cells(pitch, cell, dur, 96)
 }
 
 fn nv(pitch: u8, cell: u32, dur: u32, vel: u8) -> QNote {
-    QNote { pitch, cell, dur_cells: dur, vel }
+    QNote::from_cells(pitch, cell, dur, vel)
 }
 
 fn song(name: &str, bpm: f64, meter: (u32, u32), n_bars: u32, tracks: Vec<QTrack>) -> QSong {
@@ -87,7 +87,7 @@ fn song(name: &str, bpm: f64, meter: (u32, u32), n_bars: u32, tracks: Vec<QTrack
 }
 
 fn track(name: &str, program: u8, is_drums: bool, mut notes: Vec<QNote>) -> QTrack {
-    notes.sort_by(|a, b| a.cell.cmp(&b.cell).then(a.pitch.cmp(&b.pitch)));
+    notes.sort_by(|a, b| a.onset.cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
     QTrack { name: name.into(), program, is_drums, notes }
 }
 

@@ -21,8 +21,9 @@ PLAN.md Phase 1 (bulletproofing) is done and tagged `phase-1`: proptest
 invariant properties (running un-ignored, 3 canonicality bugs found and
 fixed), fuzz + hardened parser (panic-free, bounded, structured
 diagnostics), golden corpus in `corpus/`, and the `check`/`fmt` agent
-loop. Next: Phase 3a — the 960 ticks-per-beat clock refactor, starting
-from the design note in `DESIGN-960.md`.
+loop. Phase 3a is also done: internal time is `grid::MusicalTime`
+(960 ticks/beat, DESIGN-960.md), drums carry an explicit stroke count,
+MIDI renders at 960 PPQ. Next: the tuplet/32nd syntax bake-off (3b).
 
 ## Map
 
@@ -75,11 +76,10 @@ from the MuScriptor HF cache.
 
 ## Next / deferred
 
-- **Phase 3a (hot):** clock refactor to 960 ticks/beat — design note in
-  `DESIGN-960.md`, reviewed once, then one coherent migration. Unblocks
-  melodic 32nds, triplets, grace notes.
-- Melodic 32nds (`/` duration fractions): blocked on Phase 3a. Drum
-  subdivision shipped without it (drum `dur_cells` is a stroke count).
+- **Phase 3b / syntax bake-off (hot):** melodic 32nds (`/` fractions)
+  and tuplet spelling — the clock (960 ticks/beat, `grid::MusicalTime`,
+  DESIGN-960.md) landed 2026-07-12, so these are now purely
+  language-surface decisions, chosen by LLM bake-off per PLAN.md.
 - Per-track swing override (drums shuffle, pads straight) — floated,
   undecided.
 - Analysis-grade chord view (roman numerals over real comping), BPE motif

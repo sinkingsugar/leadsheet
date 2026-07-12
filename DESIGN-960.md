@@ -1,9 +1,9 @@
 # DESIGN-960 — the clock refactor (PLAN Phase 3a)
 
-One review, then one coherent migration. Decision already made with Gio:
-**960 ticks per beat**, integer math, `i64`, one constant, never
-serialized. This note is the audit of what moves and the rules that keep
-emission byte-identical.
+**Implemented 2026-07-12** (same session, on Gio's go). Decision already
+made with Gio: **960 ticks per beat**, integer math, `i64`, one constant,
+never serialized. This note was the audit of what moved and the rules
+that kept emission byte-identical — retained as the clock's reference.
 
 ## Today's clock, audited
 
