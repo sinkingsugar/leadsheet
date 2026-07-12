@@ -21,10 +21,8 @@ use crate::drums;
 use crate::error::Error;
 use crate::grid::{QNote, QSong, QTrack};
 use crate::key::Key;
-use crate::notation::{Tok, parse_token};
+use crate::notation::{self, Mark, Tok, parse_token};
 use std::collections::HashMap;
-
-const DEFAULT_VEL: u8 = 96;
 
 struct Header {
     name: String,
@@ -36,14 +34,33 @@ struct Header {
 enum RecBody {
     Melodic(String),
     Chordal(String),
-    Drums(Vec<(u8, Vec<bool>)>),
+    /// Lane cells: 0 empty, 1 ghost (`o`), 2 hit (`x`), 3 accent (`X`).
+    Drums(Vec<(u8, Vec<u8>)>),
 }
 
 struct PatternRec {
     track: usize,
+    /// Base velocity from the `@dyn` mark (default `f` = 96).
+    base: u8,
     /// One entry per bar: patterns may span several bars
     /// (`P3 piano* | Am . . . | F . C . |`). Drum patterns are one bar.
     bars: Vec<RecBody>,
+}
+
+/// Split `name`, `name*`, `name@mf`, `name*@mf` into (name, chordal, base).
+fn parse_inst_token(tok: &str) -> Result<(&str, bool, u8), String> {
+    let (left, base) = match tok.split_once('@') {
+        None => (tok, notation::DEFAULT_VEL),
+        Some((left, dynamic)) => (
+            left,
+            notation::dynamic_to_vel(dynamic)
+                .ok_or_else(|| format!("unknown dynamic {dynamic:?} in {tok:?}"))?,
+        ),
+    };
+    match left.strip_suffix('*') {
+        Some(name) => Ok((name, true, base)),
+        None => Ok((left, false, base)),
+    }
 }
 
 /// One parsed chord-line column.
@@ -92,9 +109,11 @@ enum BlockTarget {
 struct DrumBlock {
     track: usize,
     target: BlockTarget,
+    /// Base velocity from the `@dyn` mark.
+    base_vel: u8,
     /// Variant base: lanes not listed here are inherited from it.
     base: Option<usize>,
-    lanes: Vec<(u8, Vec<bool>)>,
+    lanes: Vec<(u8, Vec<u8>)>,
 }
 
 #[derive(Default)]
@@ -113,6 +132,7 @@ impl Builder {
         bar_start: u32,
         cpb: u32,
         content: &str,
+        base: u8,
     ) -> Result<(), String> {
         for voice in content.split('&') {
             let mut cursor = bar_start;
@@ -122,11 +142,12 @@ impl Builder {
                 if cursor + dur > bar_start + cpb {
                     return Err(format!("bar overflows at token {tok_str:?}"));
                 }
-                let (pitches, tie): (Vec<u8>, bool) = match tok {
-                    Tok::Rest { .. } => (vec![], false),
-                    Tok::Note { pitch, tie, .. } => (vec![pitch], tie),
-                    Tok::Chord { pitches, tie, .. } => (pitches, tie),
+                let (pitches, tie, mark): (Vec<u8>, bool, Mark) = match tok {
+                    Tok::Rest { .. } => (vec![], false, Mark::None),
+                    Tok::Note { pitch, tie, mark, .. } => (vec![pitch], tie, mark),
+                    Tok::Chord { pitches, tie, mark, .. } => (pitches, tie, mark),
                 };
+                let vel = notation::apply_mark(base, mark);
                 for pitch in pitches {
                     let key = (ti, pitch);
                     // Continuation of a tied note joins it; else a new note.
@@ -140,7 +161,7 @@ impl Builder {
                                 pitch,
                                 cell: cursor,
                                 dur_cells: dur,
-                                vel: DEFAULT_VEL,
+                                vel,
                             });
                             self.tracks[ti].notes.len() - 1
                         }
@@ -164,18 +185,14 @@ impl Builder {
         bar_start: u32,
         cpb: u32,
         content: &str,
+        base: u8,
     ) -> Result<(), String> {
         let cols = parse_chord_cols(content, cpb)?;
         let mut current: Option<(Vec<u8>, u32, u32)> = None; // (pitches, start, dur)
         let flush = |cur: &mut Option<(Vec<u8>, u32, u32)>, tracks: &mut Vec<QTrack>| {
             if let Some((pitches, start, dur)) = cur.take() {
                 for pitch in pitches {
-                    tracks[ti].notes.push(QNote {
-                        pitch,
-                        cell: start,
-                        dur_cells: dur,
-                        vel: DEFAULT_VEL,
-                    });
+                    tracks[ti].notes.push(QNote { pitch, cell: start, dur_cells: dur, vel: base });
                 }
             }
         };
@@ -197,17 +214,21 @@ impl Builder {
         Ok(())
     }
 
-    fn apply_drums(&mut self, ti: usize, bar_start: u32, lanes: &[(u8, Vec<bool>)]) {
+    fn apply_drums(&mut self, ti: usize, bar_start: u32, lanes: &[(u8, Vec<u8>)], base: u8) {
         for (pitch, cells) in lanes {
-            for (i, hit) in cells.iter().enumerate() {
-                if *hit {
-                    self.tracks[ti].notes.push(QNote {
-                        pitch: *pitch,
-                        cell: bar_start + i as u32,
-                        dur_cells: 1,
-                        vel: DEFAULT_VEL,
-                    });
-                }
+            for (i, code) in cells.iter().enumerate() {
+                let vel = match *code {
+                    LANE_ACCENT => notation::apply_mark(base, Mark::Accent),
+                    LANE_GHOST => notation::apply_mark(base, Mark::Ghost),
+                    LANE_HIT => base,
+                    _ => continue,
+                };
+                self.tracks[ti].notes.push(QNote {
+                    pitch: *pitch,
+                    cell: bar_start + i as u32,
+                    dur_cells: 1,
+                    vel,
+                });
             }
         }
     }
@@ -218,17 +239,24 @@ impl Builder {
         bar_start: u32,
         cpb: u32,
         body: &RecBody,
+        base: u8,
     ) -> Result<(), String> {
         match body {
-            RecBody::Melodic(s) => self.apply_melodic(ti, bar_start, cpb, s),
-            RecBody::Chordal(s) => self.apply_chordal(ti, bar_start, cpb, s),
+            RecBody::Melodic(s) => self.apply_melodic(ti, bar_start, cpb, s, base),
+            RecBody::Chordal(s) => self.apply_chordal(ti, bar_start, cpb, s, base),
             RecBody::Drums(lanes) => {
-                self.apply_drums(ti, bar_start, lanes);
+                self.apply_drums(ti, bar_start, lanes, base);
                 Ok(())
             }
         }
     }
 }
+
+/// Drum lane cell codes (shared vocabulary with the emitter).
+const LANE_EMPTY: u8 = 0;
+const LANE_GHOST: u8 = 1;
+const LANE_HIT: u8 = 2;
+const LANE_ACCENT: u8 = 3;
 
 /// Check melodic token syntax and bar-sum without placing notes.
 fn validate_melodic(content: &str, cpb: u32) -> Result<(), String> {
@@ -250,9 +278,9 @@ fn parse_kin(tok: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("expected ~P<n>, got {tok:?}"))
 }
 
-/// Split a `P1 bass | ... |` / `b3 piano* | ... |` / `P9 piano ~P7 | ... |`
-/// line into (prefix-token, instrument, chordal?, kin base, content).
-fn split_music_line(line: &str) -> Result<(&str, &str, bool, Option<usize>, &str), String> {
+/// Split a `P1 bass | ... |` / `b3 piano*@mp | ... |` / `P9 piano ~P7 | ... |`
+/// line into (prefix-token, instrument, chordal?, base vel, kin base, content).
+fn split_music_line(line: &str) -> Result<(&str, &str, bool, u8, Option<usize>, &str), String> {
     let (prefix, rest) =
         line.split_once('|').ok_or_else(|| format!("expected `| ... |` in {line:?}"))?;
     let content = match rest.rfind('|') {
@@ -269,11 +297,8 @@ fn split_music_line(line: &str) -> Result<(&str, &str, bool, Option<usize>, &str
     if let Some(junk) = parts.next() {
         return Err(format!("unexpected {junk:?} before `|`"));
     }
-    let (inst, chordal) = match inst.strip_suffix('*') {
-        Some(base) => (base, true),
-        None => (inst, false),
-    };
-    Ok((head, inst, chordal, kin, content))
+    let (inst, chordal, base) = parse_inst_token(inst)?;
+    Ok((head, inst, chordal, base, kin, content))
 }
 
 /// A drum lane line: `K |x... x.x.|` (exactly one token before `|`).
@@ -289,12 +314,14 @@ fn try_lane_line(line: &str) -> Option<(u8, &str)> {
     Some((pitch, content))
 }
 
-fn parse_lane_cells(content: &str, cpb: u32) -> Result<Vec<bool>, String> {
+fn parse_lane_cells(content: &str, cpb: u32) -> Result<Vec<u8>, String> {
     let mut cells = Vec::with_capacity(cpb as usize);
     for c in content.chars() {
         match c {
-            'x' | 'X' => cells.push(true),
-            '.' | '-' => cells.push(false),
+            'x' => cells.push(LANE_HIT),
+            'X' => cells.push(LANE_ACCENT),
+            'o' => cells.push(LANE_GHOST),
+            '.' | '-' => cells.push(LANE_EMPTY),
             c if c.is_whitespace() => {}
             c => return Err(format!("bad lane char {c:?}")),
         }
@@ -378,13 +405,17 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         };
         match block.target {
             BlockTarget::Pattern(id) => {
-                let rec = PatternRec { track: block.track, bars: vec![RecBody::Drums(lanes)] };
+                let rec = PatternRec {
+                    track: block.track,
+                    base: block.base_vel,
+                    bars: vec![RecBody::Drums(lanes)],
+                };
                 if patterns.insert(id, rec).is_some() {
                     return Err(format!("duplicate pattern P{id}"));
                 }
             }
             BlockTarget::Direct(bar) => {
-                b.apply(block.track, (bar - 1) * cpb, cpb, &RecBody::Drums(lanes))?;
+                b.apply(block.track, (bar - 1) * cpb, cpb, &RecBody::Drums(lanes), block.base_vel)?;
             }
         }
         Ok(())
@@ -452,7 +483,7 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
                         let p = &patterns[id];
                         let track = p.track;
                         let body = if p.bars.len() == 1 { &p.bars[0] } else { &p.bars[offset as usize] };
-                        b.apply(track, (next_bar + offset) * cpb, cpb, body)
+                        b.apply(track, (next_bar + offset) * cpb, cpb, body, p.base)
                             .map_err(|m| err(lineno, m))?;
                     }
                 }
@@ -462,7 +493,7 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         }
 
         if !line.contains('|') {
-            // Drum block opener: `P2 drums`, `b3 drums`, or `P8 drums ~P3`.
+            // Drum block opener: `P2 drums`, `b3 drums@p`, or `P8 drums ~P3`.
             let mut parts = line.split_whitespace();
             let (head, inst) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
             let base = match parts.next() {
@@ -471,6 +502,10 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             };
             if parts.next().is_some() || inst.is_empty() {
                 return Err(err(lineno, format!("cannot parse {line:?}")));
+            }
+            let (inst, chordal, base_vel) = parse_inst_token(inst).map_err(|m| err(lineno, m))?;
+            if chordal {
+                return Err(err(lineno, "drum patterns cannot be chord-mode (`*`)".into()));
             }
             let ti = *b
                 .track_index
@@ -489,13 +524,13 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             } else {
                 return Err(err(lineno, format!("expected P<n> or b<n>, got {head:?}")));
             };
-            pending = Some(DrumBlock { track: ti, target, base, lanes: Vec::new() });
+            pending = Some(DrumBlock { track: ti, target, base_vel, base, lanes: Vec::new() });
             continue;
         }
 
         // Pattern definition or direct bar line. `content` may span several
         // bars separated by `|`.
-        let (head, inst, chordal, kin, content) =
+        let (head, inst, chordal, base_vel, kin, content) =
             split_music_line(line).map_err(|m| err(lineno, m))?;
         let ti = *b
             .track_index
@@ -524,14 +559,15 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             .collect::<Result<_, String>>()
             .map_err(|m| err(lineno, m))?;
         if let Some(id) = head.strip_prefix('P').and_then(|n| n.parse::<usize>().ok()) {
-            if patterns.insert(id, PatternRec { track: ti, bars }).is_some() {
+            if patterns.insert(id, PatternRec { track: ti, base: base_vel, bars }).is_some() {
                 return Err(err(lineno, format!("duplicate pattern P{id}")));
             }
         } else if let Some(bar) =
             head.strip_prefix('b').and_then(|n| n.parse::<u32>().ok()).filter(|n| *n >= 1)
         {
             for (i, body) in bars.iter().enumerate() {
-                b.apply(ti, (bar - 1 + i as u32) * cpb, cpb, body).map_err(|m| err(lineno, m))?;
+                b.apply(ti, (bar - 1 + i as u32) * cpb, cpb, body, base_vel)
+                    .map_err(|m| err(lineno, m))?;
             }
             max_bar = max_bar.max(bar + bars.len() as u32 - 1);
         } else {

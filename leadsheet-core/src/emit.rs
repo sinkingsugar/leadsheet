@@ -27,7 +27,7 @@
 use crate::chord;
 use crate::drums;
 use crate::grid::{QSong, QTrack};
-use crate::notation::{Tok, emit_token_spelled};
+use crate::notation::{self, Tok, emit_token_spelled};
 use crate::pattern;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -37,8 +37,17 @@ struct Seg {
     cell: u32, // bar-relative
     dur: u32,
     pitch: u8,
+    vel: u8,
     tie_in: bool,
     tie_out: bool,
+}
+
+/// Median velocity of a bar, bucketed to a dynamic level.
+fn base_velocity(segs: &[Seg]) -> u8 {
+    let mut vels: Vec<u8> = segs.iter().map(|s| s.vel).collect();
+    vels.sort_unstable();
+    let median = vels[(vels.len() - 1) / 2];
+    notation::vel_to_dynamic(median).1
 }
 
 /// Split a track's notes at bar boundaries: per-bar segment lists.
@@ -56,6 +65,7 @@ fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> 
                     cell: cell - bar * cells_per_bar,
                     dur: seg_end - cell,
                     pitch: n.pitch,
+                    vel: n.vel,
                     tie_in: cell > n.cell,
                     tie_out: seg_end < end,
                 });
@@ -67,11 +77,12 @@ fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> 
 }
 
 /// Render one bar's segments as melodic voice strings (usually one voice).
-fn bar_voices(segs: &[Seg], cells_per_bar: u32, flats: bool) -> Vec<String> {
+/// `base` is the bar's dynamic bucket; deviating notes get `>` / `~` marks.
+fn bar_voices(segs: &[Seg], cells_per_bar: u32, flats: bool, base: u8) -> Vec<String> {
     // Segments sharing (onset, duration, tie) stack into one chord token.
-    let mut groups: BTreeMap<(u32, u32, bool), Vec<u8>> = BTreeMap::new();
+    let mut groups: BTreeMap<(u32, u32, bool), Vec<(u8, u8)>> = BTreeMap::new();
     for s in segs {
-        groups.entry((s.cell, s.dur, s.tie_out)).or_default().push(s.pitch);
+        groups.entry((s.cell, s.dur, s.tie_out)).or_default().push((s.pitch, s.vel));
     }
     // Greedy voice allocation: each group goes to the first voice that has
     // already ended when the group starts.
@@ -80,12 +91,16 @@ fn bar_voices(segs: &[Seg], cells_per_bar: u32, flats: bool) -> Vec<String> {
         toks: Vec<Tok>,
     }
     let mut voices: Vec<Voice> = Vec::new();
-    for ((cell, dur, tie), mut pitches) in groups {
-        pitches.sort_unstable();
+    for ((cell, dur, tie), mut notes) in groups {
+        notes.sort_unstable();
+        let mut vels: Vec<u8> = notes.iter().map(|(_, v)| *v).collect();
+        vels.sort_unstable();
+        let mark = notation::mark_for_vel(vels[(vels.len() - 1) / 2], base);
+        let pitches: Vec<u8> = notes.iter().map(|(p, _)| *p).collect();
         let tok = if pitches.len() == 1 {
-            Tok::Note { pitch: pitches[0], dur, tie }
+            Tok::Note { pitch: pitches[0], dur, tie, mark }
         } else {
-            Tok::Chord { pitches, dur, tie }
+            Tok::Chord { pitches, dur, tie, mark }
         };
         let voice = match voices.iter_mut().find(|v| v.end <= cell) {
             Some(v) => v,
@@ -156,31 +171,51 @@ fn try_chordal(segs: &[Seg], cells_per_bar: u32, flats: bool) -> Option<String> 
     Some(cols.join(" "))
 }
 
-type Lanes = BTreeMap<u8, Vec<bool>>;
+/// Drum lane cell: empty / ghost / hit / accent.
+pub(crate) const LANE_EMPTY: u8 = 0;
+pub(crate) const LANE_GHOST: u8 = 1;
+pub(crate) const LANE_HIT: u8 = 2;
+pub(crate) const LANE_ACCENT: u8 = 3;
 
-/// Drum step-grid: one boolean lane per GM voice.
-fn drum_lane_map(segs: &[Seg], cells_per_bar: u32) -> Lanes {
+type Lanes = BTreeMap<u8, Vec<u8>>;
+
+fn lane_char(code: u8) -> char {
+    match code {
+        LANE_GHOST => 'o',
+        LANE_HIT => 'x',
+        LANE_ACCENT => 'X',
+        _ => '.',
+    }
+}
+
+/// Drum step-grid: one lane per GM voice, cells marked by dynamic.
+fn drum_lane_map(segs: &[Seg], cells_per_bar: u32, base: u8) -> Lanes {
     let mut lanes: Lanes = BTreeMap::new();
     for s in segs {
-        lanes.entry(s.pitch).or_insert_with(|| vec![false; cells_per_bar as usize])
-            [s.cell as usize] = true;
+        let code = match notation::mark_for_vel(s.vel, base) {
+            notation::Mark::Accent => LANE_ACCENT,
+            notation::Mark::Ghost => LANE_GHOST,
+            notation::Mark::None => LANE_HIT,
+        };
+        lanes.entry(s.pitch).or_insert_with(|| vec![LANE_EMPTY; cells_per_bar as usize])
+            [s.cell as usize] = code;
     }
     lanes
 }
 
 /// Render lanes as tab lines, cells grouped by beat.
-fn render_lanes(entries: &[(u8, Vec<bool>)]) -> String {
+fn render_lanes(entries: &[(u8, Vec<u8>)]) -> String {
     let label_w =
         entries.iter().map(|(p, _)| drums::lane_label(*p).len()).max().unwrap_or(1);
     entries
         .iter()
         .map(|(pitch, cells)| {
             let mut grid = String::new();
-            for (i, hit) in cells.iter().enumerate() {
+            for (i, code) in cells.iter().enumerate() {
                 if i > 0 && i % 4 == 0 {
                     grid.push(' ');
                 }
-                grid.push(if *hit { 'x' } else { '.' });
+                grid.push(lane_char(*code));
             }
             format!("  {:<label_w$} |{grid}|", drums::lane_label(*pitch))
         })
@@ -188,38 +223,54 @@ fn render_lanes(entries: &[(u8, Vec<bool>)]) -> String {
         .join("\n")
 }
 
-fn lanes_sorted(lanes: &Lanes) -> Vec<(u8, Vec<bool>)> {
-    let mut entries: Vec<(u8, Vec<bool>)> =
-        lanes.iter().map(|(p, c)| (*p, c.clone())).collect();
+fn lanes_sorted(lanes: &Lanes) -> Vec<(u8, Vec<u8>)> {
+    let mut entries: Vec<(u8, Vec<u8>)> = lanes.iter().map(|(p, c)| (*p, c.clone())).collect();
     entries.sort_by_key(|(p, _)| drums::lane_order(*p));
     entries
 }
 
-/// One bar's emitted form.
+/// One bar's emitted form. `base` is the pattern's dynamic bucket.
 enum Body {
-    Melodic(String),
-    Chordal(String),
-    Drums(Lanes),
+    Melodic { base: u8, text: String },
+    Chordal { base: u8, text: String },
+    Drums { base: u8, lanes: Lanes },
 }
 
 impl Body {
-    /// Dedup key: kind tag + content (a chordal body must never collide
-    /// with an identical-looking melodic one).
+    /// Dedup key: kind tag + dynamic + content (a chordal body must never
+    /// collide with an identical-looking melodic one, nor `f` with `p`).
     fn key(&self) -> String {
         match self {
-            Body::Melodic(s) => format!("m:{s}"),
-            Body::Chordal(s) => format!("c:{s}"),
-            Body::Drums(lanes) => {
-                let mut s = String::from("d:");
+            Body::Melodic { base, text } => format!("m{base}:{text}"),
+            Body::Chordal { base, text } => format!("c{base}:{text}"),
+            Body::Drums { base, lanes } => {
+                let mut s = format!("d{base}:");
                 for (pitch, cells) in lanes {
                     s.push_str(&pitch.to_string());
                     s.push('=');
-                    s.extend(cells.iter().map(|c| if *c { 'x' } else { '.' }));
+                    s.extend(cells.iter().map(|c| lane_char(*c)));
                     s.push(';');
                 }
                 s
             }
         }
+    }
+
+    fn base(&self) -> u8 {
+        match self {
+            Body::Melodic { base, .. } | Body::Chordal { base, .. } | Body::Drums { base, .. } => {
+                *base
+            }
+        }
+    }
+}
+
+/// `@dyn` suffix for a pattern's name field; empty at the default dynamic.
+fn dyn_suffix(base: u8) -> String {
+    if base == notation::DEFAULT_VEL {
+        String::new()
+    } else {
+        format!("@{}", notation::vel_to_dynamic(base).0)
     }
 }
 
@@ -252,7 +303,7 @@ enum PatternForm {
     Full { kin: Option<usize> },
     /// Drums only: base pattern index + the lanes that differ from it
     /// (a lane cleared relative to the base appears as all dots).
-    DrumsDiff { base: usize, lanes: Vec<(u8, Vec<bool>)> },
+    DrumsDiff { base: usize, lanes: Vec<(u8, Vec<u8>)> },
 }
 
 fn instrument_field(t: &QTrack) -> String {
@@ -289,15 +340,16 @@ pub fn emit(q: &QSong) -> String {
                     if segs.is_empty() {
                         return None;
                     }
+                    let base = base_velocity(segs);
                     Some(if t.is_drums {
-                        Body::Drums(drum_lane_map(segs, cpb))
+                        Body::Drums { base, lanes: drum_lane_map(segs, cpb, base) }
                     } else if let Some(c) =
                         // Chord columns are quarter-note beats; only /4 meters.
                         (q.meter.1 == 4).then(|| try_chordal(segs, cpb, flats)).flatten()
                     {
-                        Body::Chordal(c)
+                        Body::Chordal { base, text: c }
                     } else {
-                        Body::Melodic(bar_voices(segs, cpb, flats).join(" & "))
+                        Body::Melodic { base, text: bar_voices(segs, cpb, flats, base).join(" & ") }
                     })
                 })
                 .collect()
@@ -326,13 +378,13 @@ pub fn emit(q: &QSong) -> String {
     // Variant planning: best earlier same-track same-kind pattern.
     let forms: Vec<PatternForm> = (0..set.patterns.len())
         .map(|i| match pattern_bodies[i] {
-            Body::Drums(lanes_i) => {
+            Body::Drums { lanes: lanes_i, .. } => {
                 let mut best: Option<(usize, usize)> = None; // (cost, base)
                 for j in 0..i {
                     if set.patterns[j].track != set.patterns[i].track {
                         continue;
                     }
-                    let Body::Drums(lanes_j) = pattern_bodies[j] else { continue };
+                    let Body::Drums { lanes: lanes_j, .. } = pattern_bodies[j] else { continue };
                     let pitches: std::collections::BTreeSet<u8> =
                         lanes_i.keys().chain(lanes_j.keys()).copied().collect();
                     let cost =
@@ -343,9 +395,11 @@ pub fn emit(q: &QSong) -> String {
                 }
                 match best {
                     Some((cost, base)) if cost < lanes_i.len() => {
-                        let Body::Drums(base_lanes) = pattern_bodies[base] else { unreachable!() };
+                        let Body::Drums { lanes: base_lanes, .. } = pattern_bodies[base] else {
+                            unreachable!()
+                        };
                         let cpb = q.cells_per_bar() as usize;
-                        let mut diff: Vec<(u8, Vec<bool>)> = Vec::new();
+                        let mut diff: Vec<(u8, Vec<u8>)> = Vec::new();
                         let pitches: std::collections::BTreeSet<u8> =
                             lanes_i.keys().chain(base_lanes.keys()).copied().collect();
                         for pitch in pitches {
@@ -353,7 +407,7 @@ pub fn emit(q: &QSong) -> String {
                                 let cells = lanes_i
                                     .get(&pitch)
                                     .cloned()
-                                    .unwrap_or_else(|| vec![false; cpb]); // cleared lane
+                                    .unwrap_or_else(|| vec![LANE_EMPTY; cpb]); // cleared lane
                                 diff.push((pitch, cells));
                             }
                         }
@@ -363,16 +417,16 @@ pub fn emit(q: &QSong) -> String {
                     _ => PatternForm::Full { kin: None },
                 }
             }
-            Body::Melodic(body_i) | Body::Chordal(body_i) => {
-                let chordal_i = matches!(pattern_bodies[i], Body::Chordal(_));
+            Body::Melodic { text: body_i, .. } | Body::Chordal { text: body_i, .. } => {
+                let chordal_i = matches!(pattern_bodies[i], Body::Chordal { .. });
                 let mut kin: Option<(f64, usize)> = None;
                 for j in 0..i {
                     if set.patterns[j].track != set.patterns[i].track {
                         continue;
                     }
                     let body_j = match pattern_bodies[j] {
-                        Body::Melodic(s) if !chordal_i => s,
-                        Body::Chordal(s) if chordal_i => s,
+                        Body::Melodic { text, .. } if !chordal_i => text,
+                        Body::Chordal { text, .. } if chordal_i => text,
                         _ => continue,
                     };
                     let sim = body_similarity(body_i, body_j);
@@ -389,38 +443,43 @@ pub fn emit(q: &QSong) -> String {
     let name_field = |i: usize| {
         let p = &set.patterns[i];
         let name = &q.tracks[p.track].name;
-        let star = if matches!(pattern_bodies[i], Body::Chordal(_)) { "*" } else { "" };
+        let star = if matches!(pattern_bodies[i], Body::Chordal { .. }) { "*" } else { "" };
+        let dynamic = dyn_suffix(pattern_bodies[i].base());
         match &forms[i] {
             PatternForm::Full { kin: Some(j) } => {
-                format!("{name}{star} ~P{}", set.patterns[*j].id)
+                format!("{name}{star}{dynamic} ~P{}", set.patterns[*j].id)
             }
-            _ => format!("{name}{star}"),
+            _ => format!("{name}{star}{dynamic}"),
         }
     };
     let name_w = (0..set.patterns.len())
-        .filter(|i| !matches!(pattern_bodies[*i], Body::Drums(_)))
+        .filter(|i| !matches!(pattern_bodies[*i], Body::Drums { .. }))
         .map(|i| name_field(i).len())
         .max()
         .unwrap_or(0);
     for i in 0..set.patterns.len() {
         let p = &set.patterns[i];
         match (&forms[i], pattern_bodies[i]) {
-            (PatternForm::DrumsDiff { base, lanes }, _) => {
+            (PatternForm::DrumsDiff { base, lanes }, body) => {
                 let _ = writeln!(
                     out,
-                    "P{:<id_w$} {} ~P{}",
+                    "P{:<id_w$} {}{} ~P{}",
                     p.id,
                     q.tracks[p.track].name,
+                    dyn_suffix(body.base()),
                     set.patterns[*base].id
                 );
-                let _ = writeln!(out, "{}", render_lanes(lanes));
+                if !lanes.is_empty() {
+                    let _ = writeln!(out, "{}", render_lanes(lanes));
+                }
             }
-            (_, Body::Drums(lanes)) => {
-                let _ = writeln!(out, "P{:<id_w$} {}", p.id, q.tracks[p.track].name);
+            (_, Body::Drums { base, lanes }) => {
+                let _ =
+                    writeln!(out, "P{:<id_w$} {}{}", p.id, q.tracks[p.track].name, dyn_suffix(*base));
                 let _ = writeln!(out, "{}", render_lanes(&lanes_sorted(lanes)));
             }
-            (_, Body::Melodic(s) | Body::Chordal(s)) => {
-                let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {s} |", p.id, name_field(i));
+            (_, Body::Melodic { text, .. } | Body::Chordal { text, .. }) => {
+                let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {text} |", p.id, name_field(i));
             }
         }
     }

@@ -243,6 +243,68 @@ fn melodic_kinship_is_informational() {
 }
 
 #[test]
+fn dynamics_emit_and_roundtrip() {
+    let nv = |pitch: u8, cell: u32, dur: u32, vel: u8| QNote { pitch, cell, dur_cells: dur, vel };
+    let q = QSong {
+        name: "dyn".into(),
+        bpm: 100.0,
+        meter: (4, 4),
+        key: None,
+        n_bars: 2,
+        tracks: vec![
+            QTrack {
+                name: "lead".into(),
+                program: 81,
+                is_drums: false,
+                // Bar 1 is quiet (mp) with one accent and one ghost;
+                // bar 2 sits at the default f — no marks expected.
+                notes: vec![
+                    nv(69, 0, 4, 64),
+                    nv(72, 4, 4, 80), // +16 over mp → accent
+                    nv(74, 8, 4, 64),
+                    nv(76, 12, 4, 40), // −24 → ghost
+                    nv(69, 16, 8, 96),
+                    nv(72, 24, 8, 96),
+                ],
+            },
+            QTrack {
+                name: "drums".into(),
+                program: 0,
+                is_drums: true,
+                notes: vec![
+                    nv(36, 0, 1, 96),
+                    nv(38, 4, 1, 112), // accent
+                    nv(42, 8, 1, 96),
+                    nv(38, 12, 1, 72), // ghost
+                ],
+            },
+        ],
+    };
+    let text = emit::emit(&q);
+    assert!(text.contains("lead@mp"), "{text}");
+    assert!(text.contains(">c4"), "accent mark:\n{text}");
+    assert!(text.contains("~e4"), "ghost mark:\n{text}");
+    assert!(!text.contains("lead@f"), "default dynamic stays unmarked:\n{text}");
+    assert!(text.contains("X..."), "drum accent:\n{text}");
+    assert!(text.contains("o..."), "drum ghost:\n{text}");
+    // Parse reconstructs bucketed velocities and stays canonical.
+    let q2 = parse::parse(&text).unwrap();
+    assert_eq!(emit::emit(&q2), text, "canonical");
+    let lead = &q2.tracks[0].notes;
+    assert_eq!(lead[0].vel, 64);
+    assert_eq!(lead[1].vel, 80);
+    assert_eq!(lead[3].vel, 40);
+    let drums = &q2.tracks[1].notes;
+    assert_eq!(drums[1].vel, 112);
+    assert_eq!(drums[3].vel, 72);
+    // And the rendered MIDI carries them.
+    let midi = render::render(&q2);
+    let back = ingest::ingest_midi(&midi, "x").unwrap();
+    let lead_back = back.tracks.iter().find(|t| !t.is_drums).unwrap();
+    assert!(lead_back.notes.iter().any(|n| n.vel == 40));
+}
+
+#[test]
 fn chord_holds_accumulate_duration() {
     let text = "\
 # song: hold  tempo: 90.00  meter: 4/4  grid: 1/16

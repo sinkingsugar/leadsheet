@@ -82,6 +82,26 @@ P2 drums
   bongos, `cg1 cg2 cg3` congas, `dNN` = any other GM key NN.
 - Drum hits are one-shots; durations are not represented.
 
+## Dynamics
+
+Pattern-level base dynamic + per-note deviations:
+
+```
+P5 lead@mf | z4 d4 >f4 e2 ~d2 |
+P3 drums@f
+  K |X... .... x.X. ....|
+  S |.... x... .... o...|
+```
+
+- `@dyn` after the instrument name: `pp`=32 `p`=48 `mp`=64 `mf`=80 `f`=96
+  `ff`=112 (MIDI velocity buckets). **Unmarked = `f` (96)**, the historical
+  default — MuScriptor transcriptions carry no velocity.
+- Melodic/chordal notes: `>` accent (+16), `~` ghost (−24). Drum lanes:
+  `X` accent, `x` normal, `o` ghost.
+- Compression is lossy by bucket: each bar's base is the bucketed median
+  velocity; notes ≥12 above it emit `>`, ≥16 below emit `~`. A file with
+  constant velocity emits no marks at all.
+
 ## Variants
 
 A pattern can declare itself a variant of an earlier one with `~P<n>`:

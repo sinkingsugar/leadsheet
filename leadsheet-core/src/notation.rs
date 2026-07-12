@@ -17,11 +17,22 @@
 //! Case marks the octave as in ABC: `C` = C4 (middle C), `c` = C5,
 //! `,` lowers and `'` raises by an octave.
 
+/// Per-note dynamic deviation from the pattern's base dynamic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mark {
+    #[default]
+    None,
+    /// `>` prefix: noticeably louder than the pattern base.
+    Accent,
+    /// `~` prefix: ghost note, noticeably softer.
+    Ghost,
+}
+
 /// One parsed bar token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Tok {
-    Note { pitch: u8, dur: u32, tie: bool },
-    Chord { pitches: Vec<u8>, dur: u32, tie: bool },
+    Note { pitch: u8, dur: u32, tie: bool, mark: Mark },
+    Chord { pitches: Vec<u8>, dur: u32, tie: bool, mark: Mark },
     Rest { dur: u32 },
 }
 
@@ -30,6 +41,54 @@ impl Tok {
         match self {
             Tok::Note { dur, .. } | Tok::Chord { dur, .. } | Tok::Rest { dur } => *dur,
         }
+    }
+}
+
+/// Dynamic marks: name ↔ velocity bucket. Unmarked patterns are `f` (96) —
+/// the historical default (MuScriptor has no velocity; 96 was always the
+/// fallback).
+pub const DYNAMICS: [(&str, u8); 6] =
+    [("pp", 32), ("p", 48), ("mp", 64), ("mf", 80), ("f", 96), ("ff", 112)];
+pub const DEFAULT_VEL: u8 = 96;
+/// Rendered offsets for `>` and `~` relative to the pattern base.
+pub const ACCENT_DELTA: i16 = 16;
+pub const GHOST_DELTA: i16 = -24;
+/// Emission thresholds: how far a note's velocity must sit from the base
+/// bucket to earn a mark.
+pub const ACCENT_THRESHOLD: i16 = 12;
+pub const GHOST_THRESHOLD: i16 = -16;
+
+/// Nearest dynamic bucket (ties resolve to the softer one).
+pub fn vel_to_dynamic(vel: u8) -> (&'static str, u8) {
+    DYNAMICS
+        .iter()
+        .copied()
+        .min_by_key(|(_, v)| (vel as i16 - *v as i16).abs())
+        .unwrap()
+}
+
+pub fn dynamic_to_vel(name: &str) -> Option<u8> {
+    DYNAMICS.iter().find(|(n, _)| *n == name).map(|(_, v)| *v)
+}
+
+pub fn apply_mark(base: u8, mark: Mark) -> u8 {
+    let delta = match mark {
+        Mark::None => 0,
+        Mark::Accent => ACCENT_DELTA,
+        Mark::Ghost => GHOST_DELTA,
+    };
+    (base as i16 + delta).clamp(1, 127) as u8
+}
+
+/// The mark a velocity earns relative to a base bucket (emission side).
+pub fn mark_for_vel(vel: u8, base: u8) -> Mark {
+    let delta = vel as i16 - base as i16;
+    if delta >= ACCENT_THRESHOLD {
+        Mark::Accent
+    } else if delta <= GHOST_THRESHOLD {
+        Mark::Ghost
+    } else {
+        Mark::None
     }
 }
 
@@ -166,6 +225,25 @@ fn parse_dur_tie(s: &str, tok: &str) -> Result<(u32, bool), String> {
 
 /// Parse one whitespace-delimited bar token.
 pub fn parse_token(tok: &str) -> Result<Tok, String> {
+    let (mark, tok_body) = if let Some(rest) = tok.strip_prefix('>') {
+        (Mark::Accent, rest)
+    } else if let Some(rest) = tok.strip_prefix('~') {
+        (Mark::Ghost, rest)
+    } else {
+        (Mark::None, tok)
+    };
+    if mark != Mark::None && tok_body.starts_with('z') {
+        return Err(format!("rest cannot carry a dynamic mark: {tok:?}"));
+    }
+    let parsed = parse_token_unmarked(tok_body)?;
+    Ok(match parsed {
+        Tok::Note { pitch, dur, tie, .. } => Tok::Note { pitch, dur, tie, mark },
+        Tok::Chord { pitches, dur, tie, .. } => Tok::Chord { pitches, dur, tie, mark },
+        rest => rest,
+    })
+}
+
+fn parse_token_unmarked(tok: &str) -> Result<Tok, String> {
     if let Some(rest) = tok.strip_prefix('[') {
         let (inner, after) =
             rest.split_once(']').ok_or_else(|| format!("unclosed chord in {tok:?}"))?;
@@ -180,7 +258,7 @@ pub fn parse_token(tok: &str) -> Result<Tok, String> {
             return Err(format!("empty chord in {tok:?}"));
         }
         let (dur, tie) = parse_dur_tie(after, tok)?;
-        return Ok(Tok::Chord { pitches, dur, tie });
+        return Ok(Tok::Chord { pitches, dur, tie, mark: Mark::None });
     }
     if let Some(rest) = tok.strip_prefix('z') {
         let (dur, tie) = parse_dur_tie(rest, tok)?;
@@ -191,7 +269,7 @@ pub fn parse_token(tok: &str) -> Result<Tok, String> {
     }
     let (pitch, rest) = parse_pitch(tok)?;
     let (dur, tie) = parse_dur_tie(rest, tok)?;
-    Ok(Tok::Note { pitch, dur, tie })
+    Ok(Tok::Note { pitch, dur, tie, mark: Mark::None })
 }
 
 pub fn emit_token(tok: &Tok) -> String {
@@ -200,12 +278,21 @@ pub fn emit_token(tok: &Tok) -> String {
 
 pub fn emit_token_spelled(tok: &Tok, flats: bool) -> String {
     let mut s = String::new();
+    match tok {
+        Tok::Note { mark: Mark::Accent, .. } | Tok::Chord { mark: Mark::Accent, .. } => {
+            s.push('>');
+        }
+        Tok::Note { mark: Mark::Ghost, .. } | Tok::Chord { mark: Mark::Ghost, .. } => {
+            s.push('~');
+        }
+        _ => {}
+    }
     let (dur, tie) = match tok {
-        Tok::Note { pitch, dur, tie } => {
+        Tok::Note { pitch, dur, tie, .. } => {
             s.push_str(&pitch_to_abc_spelled(*pitch, flats));
             (*dur, *tie)
         }
-        Tok::Chord { pitches, dur, tie } => {
+        Tok::Chord { pitches, dur, tie, .. } => {
             s.push('[');
             for p in pitches {
                 s.push_str(&pitch_to_abc_spelled(*p, flats));
@@ -255,10 +342,12 @@ mod tests {
     #[test]
     fn token_roundtrip() {
         for t in [
-            Tok::Note { pitch: 45, dur: 4, tie: false },
-            Tok::Note { pitch: 61, dur: 1, tie: true },
-            Tok::Chord { pitches: vec![60, 64, 67], dur: 16, tie: false },
-            Tok::Chord { pitches: vec![36, 42], dur: 2, tie: true },
+            Tok::Note { pitch: 45, dur: 4, tie: false, mark: Mark::None },
+            Tok::Note { pitch: 61, dur: 1, tie: true, mark: Mark::None },
+            Tok::Note { pitch: 69, dur: 2, tie: false, mark: Mark::Accent },
+            Tok::Note { pitch: 40, dur: 8, tie: true, mark: Mark::Ghost },
+            Tok::Chord { pitches: vec![60, 64, 67], dur: 16, tie: false, mark: Mark::None },
+            Tok::Chord { pitches: vec![36, 42], dur: 2, tie: true, mark: Mark::Accent },
             Tok::Rest { dur: 3 },
         ] {
             let s = emit_token(&t);
@@ -273,5 +362,23 @@ mod tests {
         assert!(parse_token("z2-").is_err());
         assert!(parse_token("A0").is_err());
         assert!(parse_token("[]4").is_err());
+        assert!(parse_token(">z2").is_err(), "rests carry no dynamics");
+        assert!(parse_token("~z").is_err());
+    }
+
+    #[test]
+    fn dynamics_mapping() {
+        assert_eq!(vel_to_dynamic(96), ("f", 96));
+        assert_eq!(vel_to_dynamic(70), ("mp", 64));
+        assert_eq!(vel_to_dynamic(127), ("ff", 112));
+        assert_eq!(vel_to_dynamic(1), ("pp", 32));
+        assert_eq!(dynamic_to_vel("mf"), Some(80));
+        assert_eq!(dynamic_to_vel("fff"), None);
+        assert_eq!(apply_mark(96, Mark::Accent), 112);
+        assert_eq!(apply_mark(96, Mark::Ghost), 72);
+        assert_eq!(apply_mark(120, Mark::Accent), 127, "clamped");
+        assert_eq!(mark_for_vel(112, 96), Mark::Accent);
+        assert_eq!(mark_for_vel(72, 96), Mark::Ghost);
+        assert_eq!(mark_for_vel(90, 96), Mark::None);
     }
 }
