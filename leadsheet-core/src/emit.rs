@@ -614,7 +614,14 @@ pub fn from_qsong(q: &QSong) -> Document {
         instruments: q
             .tracks
             .iter()
-            .map(|t| Instrument { name: t.name.clone(), program: t.program, is_drums: t.is_drums })
+            .map(|t| Instrument {
+                name: t.name.clone(),
+                // The text has no slot for a kit program (`drums:kit`);
+                // a measured GM2 kit select quantizes away here, at the
+                // boundary into source (A1, same shape as BPM).
+                program: if t.is_drums { 0 } else { t.program },
+                is_drums: t.is_drums,
+            })
             .collect(),
         patterns,
         timeline,

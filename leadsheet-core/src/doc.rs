@@ -203,6 +203,7 @@ impl Document {
             if !names.insert(&i.name) {
                 return Err(doc_err(format!("duplicate instrument {:?}", i.name)));
             }
+            validate_program(i.program, i.is_drums, true, &format!("instrument {}", i.name))?;
         }
         let mut ids = std::collections::HashSet::new();
         for (idx, p) in self.patterns.iter().enumerate() {
@@ -447,9 +448,10 @@ fn merge_variant_lanes(
 impl QSong {
     /// Structural preflight for host-built songs (quantizer/resolver
     /// output is valid by construction): header sanity, emittable unique
-    /// track names, MIDI-range pitches, positive durations, drum hits on
-    /// the 16th grid with stroke digits 1..=4, and no notes beyond
-    /// `n_bars` (emission silently drops those).
+    /// track names, GM-range programs, MIDI-range pitches and velocities,
+    /// positive durations, drum hits on the 16th grid with stroke digits
+    /// 1..=4, and no notes beyond `n_bars` (emission silently drops
+    /// those).
     pub fn validate(&self) -> Result<(), Error> {
         validate_header(&Header {
             name: self.name.clone(),
@@ -459,6 +461,8 @@ impl QSong {
             swing: self.swing,
         })?;
         let mut names = std::collections::HashSet::new();
+        // Bounded given the validated header: bar_ticks <= 64 * 960
+        // and n_bars is u32, so the product stays far below i64::MAX.
         let end = self.bar_ticks() * self.n_bars as i64;
         for t in &self.tracks {
             if !valid_name(&t.name) {
@@ -470,9 +474,18 @@ impl QSong {
             if !names.insert(&t.name) {
                 return Err(doc_err(format!("duplicate track {:?}", t.name)));
             }
+            validate_program(t.program, t.is_drums, false, &t.name)?;
             for n in &t.notes {
                 if n.pitch > 127 {
                     return Err(doc_err(format!("{}: pitch {} beyond MIDI 127", t.name, n.pitch)));
+                }
+                // 0 is note-off semantics on the wire; render would
+                // silently clamp anything outside MIDI's domain (A3).
+                if n.vel == 0 || n.vel > 127 {
+                    return Err(doc_err(format!(
+                        "{}: velocity {} outside MIDI 1..=127",
+                        t.name, n.vel
+                    )));
                 }
                 if n.dur <= MusicalTime::ZERO || n.onset < MusicalTime::ZERO {
                     return Err(doc_err(format!("{}: non-positive time on a note", t.name)));
@@ -488,16 +501,42 @@ impl QSong {
                     return Err(doc_err(format!("{}: melodic notes have strokes = 1", t.name)));
                 }
                 let extent = if t.is_drums { MusicalTime::from_sixteenths(1) } else { n.dur };
-                if n.onset + extent > end {
-                    return Err(doc_err(format!(
-                        "{}: a note ends past n_bars (emission would drop it)",
-                        t.name
-                    )));
+                // Total arithmetic (A2): a hostile onset near i64::MAX
+                // passes the sign checks and would overflow a bare add —
+                // the validator is the one thing that must never trust
+                // its input.
+                match n.onset.ticks().checked_add(extent.ticks()) {
+                    Some(e) if e <= end.ticks() => {}
+                    _ => {
+                        return Err(doc_err(format!(
+                            "{}: a note ends past n_bars (emission would drop it)",
+                            t.name
+                        )));
+                    }
                 }
             }
         }
         Ok(())
     }
+}
+
+/// Program domains (A1, triage-4): melodic programs are GM 0..=127 on
+/// both layers (render feeds them to `u7::new` unguarded). Kit programs
+/// are real state on the *compiled* layer — GM2 kit selects ride
+/// ProgramChange on channel 10: ingest measures them, render honors
+/// them — but the TEXT has no slot for them (`drums:kit`), so the
+/// source layer requires 0; `from_qsong` normalizes at the boundary in,
+/// exactly like BPM (B1).
+fn validate_program(program: u8, is_drums: bool, source: bool, who: &str) -> Result<(), Error> {
+    if program > 127 {
+        return Err(doc_err(format!("{who}: program {program} beyond GM 127")));
+    }
+    if source && is_drums && program != 0 {
+        return Err(doc_err(format!(
+            "{who}: the text has no slot for a kit program (`drums:kit`) — use 0"
+        )));
+    }
+    Ok(())
 }
 
 /// Canonical BPM = survives its own `{:.2}` spelling (the emitted form).

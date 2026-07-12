@@ -323,6 +323,60 @@ fn validate_closes_the_triage_3_holes() {
     assert!(mutate_sym(&|s| s.quality = QUALITIES.len()).validate().is_err());
 }
 
+/// Triage-4 A-family: program domains (A1), total validator arithmetic
+/// (A2), and MIDI's velocity domain (A3) — the last raw numeric fields.
+#[test]
+fn validate_closes_the_triage_4_holes() {
+    let good = doc(AUTHOR);
+
+    // A1: melodic programs are GM 0..=127 on both layers (a validated
+    // Document used to emit `piano:255`, which the reparse REJECTS —
+    // validated Document, unparseable text).
+    let mut d = good.clone();
+    d.instruments[0].program = 128;
+    assert!(d.validate().is_err(), "melodic program 128");
+    let mut q = good.resolve().unwrap();
+    q.tracks[0].program = 255;
+    assert!(q.validate().is_err(), "track program 255");
+
+    // A1: the text has no slot for a kit program, so SOURCE requires 0
+    // (kit 42 used to emit `drums:kit` and reparse as 0 — silent
+    // metadata mutation through a validated path).
+    let mut d = good.clone();
+    d.instruments[2].program = 42;
+    assert!(d.validate().is_err(), "source kit program 42");
+    // The compiled layer keeps kit programs: GM2 kit selects ride
+    // ProgramChange on channel 10 — ingest measures them and render
+    // honors them — so from_qsong normalizes at the boundary into
+    // source instead (the BPM shape).
+    let mut q = good.resolve().unwrap();
+    q.tracks[2].program = 42;
+    q.validate().expect("a measured kit-variant program is compiled state");
+    let back = emit::from_qsong(&q);
+    assert_eq!(back.instruments[2].program, 0, "quantized away at the source boundary");
+    back.validate().expect("from_qsong output validates");
+
+    // A2: validator arithmetic is total — hostile onsets/durations near
+    // i64::MAX pass the sign checks and used to overflow INSIDE the
+    // validator.
+    for (onset, dur) in [(i64::MAX, 240), (0, i64::MAX), (i64::MAX - 1, i64::MAX - 1)] {
+        let mut q = good.resolve().unwrap();
+        q.tracks[0].notes[0].onset = MusicalTime(onset);
+        q.tracks[0].notes[0].dur = MusicalTime(dur);
+        assert!(q.validate().is_err(), "onset {onset} dur {dur}");
+    }
+
+    // A3: QSong velocity is MIDI's 1..=127 — 0 is note-off semantics on
+    // the wire; both extremes used to validate and silently clamp at
+    // render. (Every legit producer stays inside: apply_mark clamps to
+    // 1..=127, ingest treats vel-0 note-ons as note-offs.)
+    for vel in [0u8, 128, 255] {
+        let mut q = good.resolve().unwrap();
+        q.tracks[0].notes[0].vel = vel;
+        assert!(q.validate().is_err(), "vel {vel}");
+    }
+}
+
 /// B1 (triage-3): BPM is canonically hundredth-quantized in SOURCE —
 /// emission spells `{:.2}`, so finer precision was silently rewritten
 /// by the first `fmt`. QSong bpm stays a raw f64 (ingest measures
