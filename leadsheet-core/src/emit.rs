@@ -25,6 +25,10 @@
 //! lists bar-stacks with run-length encoding (see [`crate::pattern`]).
 
 use crate::chord;
+use crate::doc::{
+    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, MelodicBar, PatternBody,
+    PatternDef, Row, TimelineItem,
+};
 use crate::drums::{
     self, LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT,
 };
@@ -33,6 +37,34 @@ use crate::notation::{self, Tok, emit_token_spelled};
 use crate::pattern;
 use std::collections::BTreeMap;
 use std::fmt::Write;
+
+// ---------------------------------------------------------------------------
+// Canonical spelling — shared by compressor keys and Document emission.
+
+/// Spell one voice: canonical tuplet grouping (idempotent — already-grouped
+/// tokens pass through), then token spelling.
+fn spell_voice(toks: &[Tok], flats: bool) -> String {
+    notation::detect_tuplets(toks.to_vec())
+        .iter()
+        .map(|t| emit_token_spelled(t, flats))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn spell_melodic_bar(bar: &MelodicBar, flats: bool) -> String {
+    bar.voices.iter().map(|v| spell_voice(v, flats)).collect::<Vec<_>>().join(" & ")
+}
+
+fn spell_chordal_bar(cols: &[ChordCol], flats: bool) -> String {
+    cols.iter()
+        .map(|c| match c {
+            ChordCol::Sym(sym) => chord::symbol_to_string(sym, flats),
+            ChordCol::Hold => ".".to_string(),
+            ChordCol::Rest => "z".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// A note fragment clipped to one bar.
 struct Seg {
@@ -144,7 +176,7 @@ fn record_reconstructed_vels(segs: &[Seg], base: u8, recon: &mut [Option<u8>]) {
 
 /// Render one bar's segments as melodic voice strings (usually one voice).
 /// `base` is the bar's dynamic bucket; deviating notes get `>` / `~` marks.
-fn bar_voices(segs: &[Seg], bar_len: MusicalTime, flats: bool, base: u8) -> Vec<String> {
+fn bar_voices(segs: &[Seg], bar_len: MusicalTime, base: u8) -> Vec<Vec<Tok>> {
     // Segments sharing (onset, duration, tie) stack into one chord token.
     let mut groups: BTreeMap<(MusicalTime, MusicalTime, bool), Vec<(u8, u8)>> = BTreeMap::new();
     for s in segs {
@@ -188,17 +220,14 @@ fn bar_voices(segs: &[Seg], bar_len: MusicalTime, flats: bool, base: u8) -> Vec<
             if v.end < bar_len {
                 v.toks.push(Tok::Rest { dur: bar_len - v.end });
             }
-            // Canonical tuplet grouping: runs of equal non-power-of-two
-            // divisions read as `(n …)S`.
-            let toks = notation::detect_tuplets(v.toks);
-            toks.iter().map(|t| emit_token_spelled(t, flats)).collect::<Vec<_>>().join(" ")
+            v.toks
         })
         .collect()
 }
 
 /// Chord-mode body (`Am . F G7`) if — and only if — every onset group in
 /// the bar is a beat-aligned, uniformly-held, canonically-voiced chord.
-fn try_chordal(segs: &[Seg], bar_len: MusicalTime, flats: bool) -> Option<String> {
+fn try_chordal(segs: &[Seg], bar_len: MusicalTime) -> Option<Vec<ChordCol>> {
     if segs.is_empty() || segs.iter().any(|s| s.tie_in || s.tie_out) {
         return None;
     }
@@ -209,7 +238,7 @@ fn try_chordal(segs: &[Seg], bar_len: MusicalTime, flats: bool) -> Option<String
     }
     let onsets: Vec<MusicalTime> = groups.keys().copied().collect();
     let beats = (bar_len / beat_len) as usize;
-    let mut columns: Vec<Option<String>> = vec![None; beats]; // None = rest/hold slot
+    let mut columns: Vec<Option<crate::chord::ChordSym>> = vec![None; beats]; // None = rest/hold
     let mut covered = vec![false; beats];
     for (i, (&onset, group)) in groups.iter().enumerate() {
         if onset % beat_len != MusicalTime::ZERO {
@@ -227,19 +256,20 @@ fn try_chordal(segs: &[Seg], bar_len: MusicalTime, flats: bool) -> Option<String
         pitches.sort_unstable();
         let sym = chord::detect(&pitches)?;
         let beat = (onset / beat_len) as usize;
-        columns[beat] = Some(chord::symbol_to_string(&sym, flats));
+        columns[beat] = Some(sym);
         covered[beat..beat + (dur / beat_len) as usize].fill(true);
     }
-    let cols: Vec<String> = columns
-        .iter()
-        .enumerate()
-        .map(|(b, c)| match c {
-            Some(sym) => sym.clone(),
-            None if covered[b] => ".".to_string(),
-            None => "z".to_string(),
-        })
-        .collect();
-    Some(cols.join(" "))
+    Some(
+        columns
+            .iter()
+            .enumerate()
+            .map(|(b, c)| match c {
+                Some(sym) => ChordCol::Sym(*sym),
+                None if covered[b] => ChordCol::Hold,
+                None => ChordCol::Rest,
+            })
+            .collect(),
+    )
 }
 
 type Lanes = BTreeMap<u8, Vec<u8>>;
@@ -304,10 +334,11 @@ fn lanes_sorted(lanes: &Lanes) -> Vec<(u8, Vec<u8>)> {
     entries
 }
 
-/// One bar's emitted form. `base` is the pattern's dynamic bucket.
+/// One bar's emitted form. `base` is the pattern's dynamic bucket; `text`
+/// is the canonical spelling (dedup key + kinship similarity input).
 enum Body {
-    Melodic { base: u8, text: String },
-    Chordal { base: u8, text: String },
+    Melodic { base: u8, voices: Vec<Vec<Tok>>, text: String },
+    Chordal { base: u8, cols: Vec<ChordCol>, text: String },
     Drums { base: u8, lanes: Lanes },
 }
 
@@ -316,8 +347,8 @@ impl Body {
     /// collide with an identical-looking melodic one, nor `f` with `p`).
     fn key(&self) -> String {
         match self {
-            Body::Melodic { base, text } => format!("m{base}:{text}"),
-            Body::Chordal { base, text } => format!("c{base}:{text}"),
+            Body::Melodic { base, text, .. } => format!("m{base}:{text}"),
+            Body::Chordal { base, text, .. } => format!("c{base}:{text}"),
             Body::Drums { base, lanes } => {
                 let mut s = format!("d{base}:");
                 for (pitch, cells) in lanes {
@@ -386,36 +417,15 @@ enum PatternForm {
     },
 }
 
-fn instrument_field(t: &QTrack) -> String {
+fn instrument_field(t: &Instrument) -> String {
     if t.is_drums { format!("{}:kit", t.name) } else { format!("{}:{}", t.name, t.program) }
 }
 
-pub fn emit(q: &QSong) -> String {
+/// Invent structure for a compiled song: bar splitting, dedup into
+/// patterns, drum-variant diffs, melodic kinship, RLE arrangement rows
+/// with self-similarity section labels — the compressor's Document.
+pub fn from_qsong(q: &QSong) -> Document {
     let flats = q.key.map(|k| k.use_flats()).unwrap_or(false);
-    let mut out = String::new();
-    let _ =
-        write!(out, "# song: {}  tempo: {:.2}  meter: {}/{}", q.name, q.bpm, q.meter.0, q.meter.1);
-    if let Some(key) = q.key {
-        let _ = write!(out, "  key: {}", key.name());
-    }
-    if let Some(sw) = q.swing {
-        match sw.level {
-            16 => {
-                let _ = write!(out, "  swing: 16th {}%", sw.percent);
-            }
-            _ => {
-                let _ = write!(out, "  swing: {}%", sw.percent);
-            }
-        }
-    }
-    out.push_str("  grid: 1/16\n");
-    let _ = writeln!(
-        out,
-        "# instruments: {}",
-        q.tracks.iter().map(instrument_field).collect::<Vec<_>>().join(" ")
-    );
-    out.push('\n');
-
     let cpb = q.cells_per_bar();
     let bar_len = q.bar_ticks();
     let bodies: Vec<Vec<Option<Body>>> = q
@@ -445,18 +455,22 @@ pub fn emit(q: &QSong) -> String {
                     }
                     Some(if t.is_drums {
                         Body::Drums { base, lanes: drum_lane_map(&segs, cpb, base) }
-                    } else if let Some(c) =
+                    } else if let Some(cols) =
                         // Chord columns are quarter-note beats; only /4 meters.
                         (q.meter.1 == 4)
-                            .then(|| try_chordal(&segs, bar_len, flats))
+                            .then(|| try_chordal(&segs, bar_len))
                             .flatten()
                     {
-                        Body::Chordal { base, text: c }
+                        let text = spell_chordal_bar(&cols, flats);
+                        Body::Chordal { base, cols, text }
                     } else {
-                        Body::Melodic {
-                            base,
-                            text: bar_voices(&segs, bar_len, flats, base).join(" & "),
-                        }
+                        let voices = bar_voices(&segs, bar_len, base);
+                        let text = voices
+                            .iter()
+                            .map(|v| spell_voice(v, flats))
+                            .collect::<Vec<_>>()
+                            .join(" & ");
+                        Body::Melodic { base, voices, text }
                     })
                 })
                 .collect()
@@ -545,78 +559,236 @@ pub fn emit(q: &QSong) -> String {
         })
         .collect();
 
-    let id_w = set.patterns.len().to_string().len();
-    let name_field = |i: usize| {
-        let p = &set.patterns[i];
-        let name = &q.tracks[p.track].name;
-        let star = if matches!(pattern_bodies[i], Body::Chordal { .. }) { "*" } else { "" };
-        let dynamic = dyn_suffix(pattern_bodies[i].base());
-        match &forms[i] {
-            PatternForm::Full { kin: Some(j) } => {
-                format!("{name}{star}{dynamic} ~P{}", set.patterns[*j].id)
+    let labels = section_labels(&set, &forms);
+    let patterns: Vec<PatternDef> = (0..set.patterns.len())
+        .map(|i| {
+            let p = &set.patterns[i];
+            let (kin, body) = match (&forms[i], pattern_bodies[i]) {
+                (PatternForm::DrumsDiff { base, lanes }, _) => (
+                    None,
+                    PatternBody::Drums(DrumsBody {
+                        variant_base: Some(set.patterns[*base].id),
+                        lanes: lanes.clone(),
+                    }),
+                ),
+                (PatternForm::Full { .. }, Body::Drums { lanes, .. }) => (
+                    None,
+                    PatternBody::Drums(DrumsBody {
+                        variant_base: None,
+                        lanes: lanes_sorted(lanes),
+                    }),
+                ),
+                (PatternForm::Full { kin }, Body::Melodic { voices, .. }) => (
+                    kin.map(|j| set.patterns[j].id),
+                    PatternBody::Melodic(vec![MelodicBar { voices: voices.clone() }]),
+                ),
+                (PatternForm::Full { kin }, Body::Chordal { cols, .. }) => {
+                    (kin.map(|j| set.patterns[j].id), PatternBody::Chordal(vec![cols.clone()]))
+                }
+            };
+            PatternDef { id: p.id, track: p.track, base_vel: pattern_bodies[i].base(), kin, body }
+        })
+        .collect();
+    let timeline: Vec<TimelineItem> = set
+        .rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            TimelineItem::Row(Row {
+                label: labels.get(&i).cloned(),
+                stack: row.stack.clone(),
+                reps: row.reps,
+            })
+        })
+        .collect();
+    Document {
+        header: Header {
+            name: q.name.clone(),
+            bpm: q.bpm,
+            meter: q.meter,
+            key: q.key,
+            swing: q.swing,
+        },
+        instruments: q
+            .tracks
+            .iter()
+            .map(|t| Instrument { name: t.name.clone(), program: t.program, is_drums: t.is_drums })
+            .collect(),
+        patterns,
+        timeline,
+    }
+}
+
+/// Render a Document as canonical text. The exact inverse of
+/// [`crate::parse::parse_document`] on canonical input, and the layout
+/// engine for both compressor output and `leadsheet fmt`
+/// (Document-canonical: author structure survives).
+pub fn emit_document(d: &Document) -> String {
+    let flats = d.header.key.map(|k| k.use_flats()).unwrap_or(false);
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "# song: {}  tempo: {:.2}  meter: {}/{}",
+        d.header.name, d.header.bpm, d.header.meter.0, d.header.meter.1
+    );
+    if let Some(key) = d.header.key {
+        let _ = write!(out, "  key: {}", key.name());
+    }
+    if let Some(sw) = d.header.swing {
+        match sw.level {
+            16 => {
+                let _ = write!(out, "  swing: 16th {}%", sw.percent);
             }
-            _ => format!("{name}{star}{dynamic}"),
+            _ => {
+                let _ = write!(out, "  swing: {}%", sw.percent);
+            }
+        }
+    }
+    out.push_str("  grid: 1/16\n");
+    let _ = writeln!(
+        out,
+        "# instruments: {}",
+        d.instruments.iter().map(instrument_field).collect::<Vec<_>>().join(" ")
+    );
+    out.push('\n');
+
+    let name_field = |p: &PatternDef| -> String {
+        let name = &d.instruments[p.track].name;
+        let star = if matches!(p.body, PatternBody::Chordal(_)) { "*" } else { "" };
+        let dynamic = dyn_suffix(p.base_vel);
+        match p.kin {
+            Some(k) => format!("{name}{star}{dynamic} ~P{k}"),
+            None => format!("{name}{star}{dynamic}"),
         }
     };
-    let name_w = (0..set.patterns.len())
-        .filter(|i| !matches!(pattern_bodies[*i], Body::Drums { .. }))
-        .map(|i| name_field(i).len())
-        .max()
-        .unwrap_or(0);
-    for i in 0..set.patterns.len() {
-        let p = &set.patterns[i];
-        match (&forms[i], pattern_bodies[i]) {
-            (PatternForm::DrumsDiff { base, lanes }, body) => {
-                let _ = writeln!(
-                    out,
-                    "P{:<id_w$} {}{} ~P{}",
-                    p.id,
-                    q.tracks[p.track].name,
-                    dyn_suffix(body.base()),
-                    set.patterns[*base].id
-                );
-                if !lanes.is_empty() {
-                    let _ = writeln!(out, "{}", render_lanes(lanes));
+    if !d.patterns.is_empty() {
+        let id_w = d.patterns.iter().map(|p| p.id).max().unwrap_or(1).to_string().len();
+        let name_w = d
+            .patterns
+            .iter()
+            .filter(|p| !matches!(p.body, PatternBody::Drums(_)))
+            .map(|p| name_field(p).len())
+            .max()
+            .unwrap_or(0);
+        for p in &d.patterns {
+            match &p.body {
+                PatternBody::Drums(db) => match db.variant_base {
+                    Some(base) => {
+                        let _ = writeln!(
+                            out,
+                            "P{:<id_w$} {}{} ~P{base}",
+                            p.id,
+                            d.instruments[p.track].name,
+                            dyn_suffix(p.base_vel)
+                        );
+                        if !db.lanes.is_empty() {
+                            let _ = writeln!(out, "{}", render_lanes(&db.lanes));
+                        }
+                    }
+                    None => {
+                        let _ = writeln!(
+                            out,
+                            "P{:<id_w$} {}{}",
+                            p.id,
+                            d.instruments[p.track].name,
+                            dyn_suffix(p.base_vel)
+                        );
+                        let _ = writeln!(out, "{}", render_lanes(&db.lanes));
+                    }
+                },
+                PatternBody::Melodic(bars) => {
+                    let text = bars
+                        .iter()
+                        .map(|b| spell_melodic_bar(b, flats))
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {text} |", p.id, name_field(p));
                 }
-            }
-            (_, Body::Drums { base, lanes }) => {
-                let _ = writeln!(
-                    out,
-                    "P{:<id_w$} {}{}",
-                    p.id,
-                    q.tracks[p.track].name,
-                    dyn_suffix(*base)
-                );
-                let _ = writeln!(out, "{}", render_lanes(&lanes_sorted(lanes)));
-            }
-            (_, Body::Melodic { text, .. } | Body::Chordal { text, .. }) => {
-                let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {text} |", p.id, name_field(i));
+                PatternBody::Chordal(bars) => {
+                    let text = bars
+                        .iter()
+                        .map(|b| spell_chordal_bar(b, flats))
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {text} |", p.id, name_field(p));
+                }
             }
         }
     }
 
-    if !set.rows.is_empty() {
-        let labels = section_labels(&set, &forms);
-        out.push('\n');
-        out.push_str("arrangement:\n");
-        for (i, row) in set.rows.iter().enumerate() {
-            let stack = if row.stack.is_empty() {
-                "z".to_string()
-            } else {
-                row.stack.iter().map(|id| format!("P{id}")).collect::<Vec<_>>().join("+")
-            };
-            let label = labels.get(&i).map(|l| format!("{l}: ")).unwrap_or_default();
-            match row.reps {
-                1 => {
-                    let _ = writeln!(out, "  {label}[{stack}]");
+    let mut started = false;
+    let mut in_rows = false;
+    for item in &d.timeline {
+        if !started {
+            if !d.patterns.is_empty() {
+                out.push('\n');
+            }
+            started = true;
+        }
+        match item {
+            TimelineItem::Row(row) => {
+                if !in_rows {
+                    out.push_str("arrangement:\n");
+                    in_rows = true;
                 }
-                n => {
-                    let _ = writeln!(out, "  {label}[{stack}] x{n}");
+                let stack = if row.stack.is_empty() {
+                    "z".to_string()
+                } else {
+                    row.stack.iter().map(|id| format!("P{id}")).collect::<Vec<_>>().join("+")
+                };
+                let label = row.label.as_ref().map(|l| format!("{l}: ")).unwrap_or_default();
+                match row.reps {
+                    1 => {
+                        let _ = writeln!(out, "  {label}[{stack}]");
+                    }
+                    n => {
+                        let _ = writeln!(out, "  {label}[{stack}] x{n}");
+                    }
                 }
+            }
+            TimelineItem::Direct(di) => {
+                in_rows = false;
+                emit_direct(&mut out, d, di, flats);
             }
         }
     }
     out
+}
+
+fn emit_direct(out: &mut String, d: &Document, di: &DirectItem, flats: bool) {
+    let name = &d.instruments[di.track].name;
+    let dynamic = dyn_suffix(di.base_vel);
+    match &di.body {
+        PatternBody::Drums(db) => {
+            match db.variant_base {
+                Some(base) => {
+                    let _ = writeln!(out, "b{} {name}{dynamic} ~P{base}", di.bar);
+                }
+                None => {
+                    let _ = writeln!(out, "b{} {name}{dynamic}", di.bar);
+                }
+            }
+            if !db.lanes.is_empty() {
+                let _ = writeln!(out, "{}", render_lanes(&db.lanes));
+            }
+        }
+        PatternBody::Melodic(bars) => {
+            let text =
+                bars.iter().map(|b| spell_melodic_bar(b, flats)).collect::<Vec<_>>().join(" | ");
+            let _ = writeln!(out, "b{} {name}{dynamic} | {text} |", di.bar);
+        }
+        PatternBody::Chordal(bars) => {
+            let text =
+                bars.iter().map(|b| spell_chordal_bar(b, flats)).collect::<Vec<_>>().join(" | ");
+            let _ = writeln!(out, "b{} {name}*{dynamic} | {text} |", di.bar);
+        }
+    }
+}
+
+/// QSong → canonical text (the historical entry point): structure is
+/// invented by [`from_qsong`], spelled by [`emit_document`].
+pub fn emit(q: &QSong) -> String {
+    emit_document(&from_qsong(q))
 }
 
 /// Self-similarity section labels over arrangement rows.

@@ -86,8 +86,9 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Rewrite leadsheet text in canonical form (parse + canonical emit —
-    /// never reinterprets a note).
+    /// Rewrite leadsheet text in canonical form. Document-canonical:
+    /// hand-authored structure (pattern ids, multi-bar patterns, direct
+    /// bars, labels) survives — never reinterprets a note.
     Fmt {
         input: PathBuf,
         /// Output path (default: rewrite in place; `-` for stdout).
@@ -267,8 +268,9 @@ fn main() -> Result<()> {
         }
         Cmd::Fmt { input, output } => {
             let text = std::fs::read_to_string(&input)?;
-            let qsong = leadsheet_core::parse::parse(&text)?;
-            let canonical = leadsheet_core::emit::emit(&qsong);
+            let document = leadsheet_core::parse::parse_document(&text)?;
+            let qsong = document.resolve()?;
+            let canonical = leadsheet_core::emit::emit_document(&document);
             let out_path = output.unwrap_or_else(|| input.clone());
             if out_path.as_os_str() == "-" {
                 print!("{canonical}");
