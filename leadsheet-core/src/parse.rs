@@ -24,6 +24,12 @@ use crate::key::Key;
 use crate::notation::{self, Mark, Tok, parse_token};
 use std::collections::HashMap;
 
+/// Hard ceilings against pathological input — parse must stay panic-free
+/// with bounded time and memory on garbage. No real song gets anywhere
+/// close (100k bars ≈ two days of 4/4 at 120 BPM).
+const MAX_BARS: u32 = 100_000;
+const MAX_METER_NUMERATOR: u32 = 64;
+
 struct Header {
     name: String,
     bpm: f64,
@@ -143,7 +149,8 @@ impl Builder {
             for tok_str in voice.split_whitespace() {
                 let tok = parse_token(tok_str)?;
                 let dur = tok.dur();
-                if cursor + dur > bar_start + cpb {
+                // u64: a hostile duration must not wrap the bounds check.
+                if cursor as u64 + dur as u64 > (bar_start + cpb) as u64 {
                     return Err(format!("bar overflows at token {tok_str:?}"));
                 }
                 let (pitches, tie, mark): (Vec<u8>, bool, Mark) = match tok {
@@ -271,11 +278,12 @@ const LANE_D4: u8 = 6;
 /// Check melodic token syntax and bar-sum without placing notes.
 fn validate_melodic(content: &str, cpb: u32) -> Result<(), String> {
     for voice in content.split('&') {
-        let mut sum = 0u32;
+        // u64: hostile durations must not wrap the sum.
+        let mut sum = 0u64;
         for tok_str in voice.split_whitespace() {
-            sum += parse_token(tok_str)?.dur();
+            sum += parse_token(tok_str)?.dur() as u64;
         }
-        if sum != cpb && sum != 0 {
+        if sum != cpb as u64 && sum != 0 {
             return Err(format!("voice covers {sum} of {cpb} cells"));
         }
     }
@@ -490,6 +498,9 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
                     ));
                 }
             }
+            if next_bar as u64 + reps as u64 * unit as u64 > MAX_BARS as u64 {
+                return Err(err(lineno, format!("arrangement exceeds {MAX_BARS} bars")));
+            }
             for _ in 0..reps {
                 for offset in 0..unit {
                     for id in &ids {
@@ -530,8 +541,10 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             }
             let target = if let Some(id) = head.strip_prefix('P').and_then(|n| n.parse().ok()) {
                 BlockTarget::Pattern(id)
-            } else if let Some(bar) =
-                head.strip_prefix('b').and_then(|n| n.parse::<u32>().ok()).filter(|n| *n >= 1)
+            } else if let Some(bar) = head
+                .strip_prefix('b')
+                .and_then(|n| n.parse::<u32>().ok())
+                .filter(|n| (1..=MAX_BARS).contains(n))
             {
                 max_bar = max_bar.max(bar);
                 BlockTarget::Direct(bar)
@@ -579,9 +592,14 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             if patterns.insert(id, PatternRec { track: ti, base: base_vel, bars }).is_some() {
                 return Err(err(lineno, format!("duplicate pattern P{id}")));
             }
-        } else if let Some(bar) =
-            head.strip_prefix('b').and_then(|n| n.parse::<u32>().ok()).filter(|n| *n >= 1)
+        } else if let Some(bar) = head
+            .strip_prefix('b')
+            .and_then(|n| n.parse::<u32>().ok())
+            .filter(|n| (1..=MAX_BARS).contains(n))
         {
+            if bar as u64 + bars.len() as u64 - 1 > MAX_BARS as u64 {
+                return Err(err(lineno, format!("bars beyond the {MAX_BARS}-bar limit")));
+            }
             for (i, body) in bars.iter().enumerate() {
                 b.apply(ti, (bar - 1 + i as u32) * cpb, cpb, body, base_vel)
                     .map_err(|m| err(lineno, m))?;
@@ -659,6 +677,11 @@ fn parse_header_line(
                 let d: u32 = d.parse().map_err(|_| "bad meter")?;
                 if d != 4 && d != 8 {
                     return Err(format!("unsupported meter {m:?}"));
+                }
+                if n == 0 || n > MAX_METER_NUMERATOR {
+                    return Err(format!(
+                        "meter numerator out of range in {m:?} (1..={MAX_METER_NUMERATOR})"
+                    ));
                 }
                 (n, d)
             }
