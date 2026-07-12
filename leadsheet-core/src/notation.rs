@@ -325,22 +325,25 @@ pub fn parse_tokens(voice: &str) -> Result<Vec<Tok>, String> {
                     members.len()
                 ));
             }
-            if span.ticks() % n as i64 != 0 {
+            if span.ticks() < n as i64 {
                 return Err(format!(
-                    "a ({n} …){} tuplet doesn't land on the tick grid — {n} must divide \
-                     {} ticks; try a different span or arity",
-                    dur_text(span),
-                    span.ticks(),
+                    "a ({n} …){} tuplet has fewer ticks than members",
+                    dur_text(span)
                 ));
             }
             if tie && matches!(members.last(), Some(Tok::Rest { .. })) {
                 return Err("a tuplet ending in a rest cannot be tied".into());
             }
-            let step = MusicalTime(span.ticks() / n as i64);
-            for m in &mut members {
+            // Member durations follow the placement contract: member i
+            // spans [round(i·S/n), round((i+1)·S/n)) — for exact divisions
+            // that's S/n everywhere; inexact ones (septuplets) differ by
+            // ±1 tick and the span still closes exactly.
+            for (i, m) in members.iter_mut().enumerate() {
+                let dur =
+                    tuplet_boundary(span, n, i as u32 + 1) - tuplet_boundary(span, n, i as u32);
                 match m {
-                    Tok::Note { dur, .. } | Tok::Chord { dur, .. } | Tok::Rest { dur } => {
-                        *dur = step;
+                    Tok::Note { dur: d, .. } | Tok::Chord { dur: d, .. } | Tok::Rest { dur: d } => {
+                        *d = dur;
                     }
                     Tok::Tuplet { .. } => unreachable!("parse_member rejects nesting"),
                 }
@@ -351,6 +354,13 @@ pub fn parse_tokens(voice: &str) -> Result<Vec<Tok>, String> {
         out.push(parse_token(word)?);
     }
     Ok(out)
+}
+
+/// THE tuplet boundary rule (DESIGN-960): member *i* of an n-tuplet over
+/// span S starts at `round(i·S/n)`; the span always closes exactly.
+pub fn tuplet_boundary(span: MusicalTime, n: u32, i: u32) -> MusicalTime {
+    // Round half up, in i128 to shrug off hostile spans.
+    MusicalTime(((2 * i as i128 * span.ticks() as i128 + n as i128) / (2 * n as i128)) as i64)
 }
 
 /// A tuplet member: marked pitch/chord/rest, no duration, no tie.
@@ -627,8 +637,15 @@ mod tests {
         // Quintuplet over a beat: 192-tick members.
         let toks = parse_tokens("(5 C D E F G)4").unwrap();
         assert_eq!(toks[0].dur(), cells(4));
-        // Inexact division is refused (septuplet needs the Document layer).
-        assert!(parse_tokens("(7 C D E F G A B)4").is_err());
+        // Inexact divisions are semantic objects: member durations follow
+        // round(i*S/n) boundaries (137/137/137/138/137/137/137 over a beat)
+        // and the span closes exactly.
+        let toks = parse_tokens("(7 C D E F G A B)4").unwrap();
+        let Tok::Tuplet { members, span, .. } = &toks[0] else { panic!() };
+        let durs: Vec<i64> = members.iter().map(|m| m.dur().ticks()).collect();
+        assert_eq!(durs, [137, 137, 137, 138, 137, 137, 137]);
+        assert_eq!(durs.iter().sum::<i64>(), span.ticks());
+        assert_eq!(emit_token(&toks[0]), "(7 C D E F G A B)4");
         // Member counts and member durations are strict.
         assert!(parse_tokens("(3 C D)4").is_err());
         assert!(parse_tokens("(3 C2 D E)4").is_err());

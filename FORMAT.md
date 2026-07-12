@@ -64,13 +64,16 @@ bar lines — restate the chord).
   work; `/7` of a single cell doesn't).
 - Tuplets: `(3 C D E)4` = three notes evenly dividing 4 cells (an 8th
   triplet over the beat); `(3 e f g)2` = a 16th triplet; `(5 …)4` = a
-  quintuplet. Members are bare pitches, `[..]` chords or `z` rests —
-  marks allowed, no durations, no nesting; the arity must match the
-  member count and divide the span evenly. Tie the whole group with `-`
-  after the span: `(3 C E G)4-`. Runs of equal triplet-length notes
-  written as fractions (`C4/3 D4/3 E4/3`) canonicalize to the group form;
-  conversely a group with trailing rests may respell as fractions (the
-  rest merges with whatever silence follows) — timing is unchanged.
+  quintuplet; `(7 …)4` = a septuplet. Members are bare pitches, `[..]`
+  chords or `z` rests — marks allowed, no durations, no nesting; the
+  arity (2–24) must match the member count. The group is the semantic
+  object: divisions that don't fall on whole ticks place their members
+  at `round(i·span/n)` and the span always closes exactly. Tie the whole
+  group with `-` after the span: `(3 C E G)4-`. Runs of equal
+  triplet-length notes written as fractions (`C4/3 D4/3 E4/3`)
+  canonicalize to the group form; conversely a group with trailing rests
+  may respell as fractions (the rest merges with whatever silence
+  follows) — timing is unchanged.
 - `z2` = rest. `[CEG]4` = simultaneous notes (exact pitches, any content).
 - `-` = tie into the next bar: `C8-` … next bar `C4` continues the note.
 - ` & ` separates overlapping voices within a bar (sustained note under a

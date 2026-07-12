@@ -1,31 +1,40 @@
-//! Text → QSong. The inverse of [`crate::emit`]; the renderer's front door.
+//! Text → [`Document`] (the faithful AST), then [`Document::resolve`] →
+//! `QSong`. The inverse of [`crate::emit`]; the renderer's front door.
 //!
 //! Three bar-body forms, matching the emitter:
 //!
-//! - Melodic: `P1 bass | A,,4 ^F2 z2 [CEG]4 |` (voices with `&`, ties `-`)
+//! - Melodic: `P1 bass | A,,4 ^F2 z2 [CEG]4 |` (voices with `&`, ties `-`,
+//!   fractions `e/2`, tuplet groups `(3 C D E)4`)
 //! - Chordal: `P3 piano* | Am . F G7 |` — `*` marks chord mode; 1 column =
 //!   1 beat, `.` holds, `z` rests; symbols render as canonical voicings.
 //! - Drums: a `P2 drums` line followed by indented lanes `K |x...x...|`.
 //!
 //! Notes can also be placed directly with `b<n>` instead of `P<n>` +
 //! arrangement (handy when writing by hand). Arrangement rows may carry a
-//! label (`chorus: [P1+P2] x4`); labels are ignored. `[z]` is a silent bar.
+//! label (`chorus: [P1+P2] x4`); labels are source content on the
+//! Document. `[z]` is a silent bar.
 //!
-//! Tolerant of whitespace and of anything after the closing `|` (annotation
-//! comments). Strict about what matters: unknown instruments or patterns,
+//! Tolerant of whitespace and of anything after the closing `|`
+//! (annotation comments — dropped, canonical form is the product). Strict
+//! about what matters: unknown instruments, patterns or header fields,
 //! bad tokens, and voices that don't sum to a full bar are hard errors
 //! carrying a structured [`Diagnostic`] (code, line/col, message,
 //! suggestion) precise enough for an LLM to repair the text from the
-//! diagnostic alone.
+//! diagnostic alone. All validation happens HERE, line-accurately;
+//! `resolve()` on a parsed Document does not fail.
 
 use crate::chord;
+use crate::doc::{
+    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, MelodicBar, PatternBody,
+    PatternDef, Row, TimelineItem,
+};
 use crate::drums::{
     self, LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT,
 };
 use crate::error::{Diagnostic, Error};
-use crate::grid::{MusicalTime, QNote, QSong, QTrack};
+use crate::grid::{MusicalTime, QSong};
 use crate::key::Key;
-use crate::notation::{self, Mark, Tok};
+use crate::notation;
 use std::collections::HashMap;
 
 /// Hard ceilings against pathological input — parse must stay panic-free
@@ -70,30 +79,6 @@ const MUSIC_LINE_SHAPE: &str =
 const TOKEN_SHAPE: &str = "melodic tokens are a pitch (A-G/a-g with ^ _ = accidentals, , ' \
                            octaves), a cell count, and an optional `-` tie: ^F2, [CEG]4-, z8";
 
-struct Header {
-    name: String,
-    bpm: f64,
-    meter: (u32, u32),
-    key: Option<Key>,
-    swing: Option<crate::grid::Swing>,
-}
-
-enum RecBody {
-    Melodic(String),
-    Chordal(String),
-    /// Lane cells: 0 empty, 1 ghost (`o`), 2 hit (`x`), 3 accent (`X`).
-    Drums(Vec<(u8, Vec<u8>)>),
-}
-
-struct PatternRec {
-    track: usize,
-    /// Base velocity from the `@dyn` mark (default `f` = 96).
-    base: u8,
-    /// One entry per bar: patterns may span several bars
-    /// (`P3 piano* | Am . . . | F . C . |`). Drum patterns are one bar.
-    bars: Vec<RecBody>,
-}
-
 /// Split `name`, `name*`, `name@mf`, `name*@mf` into (name, chordal, base).
 fn parse_inst_token(tok: &str) -> Result<(&str, bool, u8), Raw> {
     let (left, base) = match tok.split_once('@') {
@@ -111,13 +96,6 @@ fn parse_inst_token(tok: &str) -> Result<(&str, bool, u8), Raw> {
         Some(name) => Ok((name, true, base)),
         None => Ok((left, false, base)),
     }
-}
-
-/// One parsed chord-line column.
-enum ChordCol {
-    Sym(Vec<u8>),
-    Hold,
-    Rest,
 }
 
 fn parse_chord_cols(content: &str, cpb: u32) -> Result<Vec<ChordCol>, Raw> {
@@ -157,39 +135,11 @@ fn parse_chord_cols(content: &str, cpb: u32) -> Result<Vec<ChordCol>, Raw> {
                         .at(sym)
                 })?;
                 have_chord = true;
-                ChordCol::Sym(chord::voicing(&sym_parsed).expect("parse_symbol validated the bass"))
+                ChordCol::Sym(sym_parsed)
             }
         });
     }
     Ok(out)
-}
-
-/// Where a pending drum-lane block will land once complete.
-enum BlockTarget {
-    Pattern(usize),
-    Direct(u32), // bar number (1-based)
-}
-
-struct DrumBlock {
-    track: usize,
-    target: BlockTarget,
-    /// Line the block opened on (for diagnostics at flush time).
-    line: usize,
-    /// Base velocity from the `@dyn` mark.
-    base_vel: u8,
-    /// Variant base: lanes not listed here are inherited from it.
-    base: Option<usize>,
-    lanes: Vec<(u8, Vec<u8>)>,
-}
-
-#[derive(Default)]
-struct Builder {
-    tracks: Vec<QTrack>,
-    track_index: HashMap<String, usize>,
-    /// Open ties per (track, pitch): (index into track notes, end tick so
-    /// far). Several can be open at once (doubled pitches in a chord), so
-    /// continuations match by end position.
-    open_ties: HashMap<(usize, u8), Vec<(usize, MusicalTime)>>,
 }
 
 /// Diagnostics-friendly cell count for a tick position ("8", "7.5").
@@ -198,212 +148,11 @@ fn cells_display(t: MusicalTime) -> String {
     if cells.fract() == 0.0 { format!("{cells:.0}") } else { format!("{cells}") }
 }
 
-impl Builder {
-    /// Place one note/chord (or tuplet member) at `onset`, joining an open
-    /// tie that ends exactly there; register a new tie when asked.
-    fn place(
-        &mut self,
-        ti: usize,
-        onset: MusicalTime,
-        dur: MusicalTime,
-        pitches: &[u8],
-        tie: bool,
-        vel: u8,
-    ) {
-        for &pitch in pitches {
-            let key = (ti, pitch);
-            // Only a tie ending exactly at the onset is consumed — other
-            // open ties on this pitch stay registered.
-            let open = self.open_ties.get_mut(&key).and_then(|v| {
-                v.iter().position(|&(_, end)| end == onset).map(|i| v.swap_remove(i).0)
-            });
-            let idx = match open {
-                Some(idx) => {
-                    self.tracks[ti].notes[idx].dur += dur;
-                    idx
-                }
-                None => {
-                    self.tracks[ti].notes.push(QNote { pitch, onset, dur, strokes: 1, vel });
-                    self.tracks[ti].notes.len() - 1
-                }
-            };
-            if tie {
-                self.open_ties.entry(key).or_default().push((idx, onset + dur));
-            }
-        }
-    }
-
-    /// Place one melodic bar (`voice & voice`) at `bar_start` cells.
-    fn apply_melodic(
-        &mut self,
-        ti: usize,
-        bar_start: u32,
-        cpb: u32,
-        content: &str,
-        base: u8,
-    ) -> Result<(), Raw> {
-        let bar_start = MusicalTime::from_sixteenths(bar_start);
-        let bar_end = bar_start + MusicalTime::from_sixteenths(cpb);
-        for voice in content.split('&') {
-            let toks =
-                notation::parse_tokens(voice).map_err(|m| raw("bad-token", m).hint(TOKEN_SHAPE))?;
-            let mut cursor = bar_start;
-            for tok in toks {
-                let dur = tok.dur();
-                if cursor.ticks().saturating_add(dur.ticks()) > bar_end.ticks() {
-                    let spelled = notation::emit_token(&tok);
-                    return Err(raw("bar-length", format!("bar overflows at token {spelled:?}"))
-                        .hint(format!(
-                            "durations in this bar sum past its {cpb} cells — shorten one, or move \
-                         the overflow into the next bar with a tie (`-`)"
-                        ))
-                        .at(spelled));
-                }
-                match tok {
-                    Tok::Rest { .. } => {}
-                    Tok::Note { pitch, tie, mark, .. } => {
-                        self.place(
-                            ti,
-                            cursor,
-                            dur,
-                            &[pitch],
-                            tie,
-                            notation::apply_mark(base, mark),
-                        );
-                    }
-                    Tok::Chord { pitches, tie, mark, .. } => {
-                        self.place(
-                            ti,
-                            cursor,
-                            dur,
-                            &pitches,
-                            tie,
-                            notation::apply_mark(base, mark),
-                        );
-                    }
-                    Tok::Tuplet { n, members, span, tie } => {
-                        // Member i spans [i*S/n, (i+1)*S/n) — exact by the
-                        // divisibility check in parse_tokens.
-                        let step = MusicalTime(span.ticks() / n as i64);
-                        for (i, m) in members.iter().enumerate() {
-                            let at = cursor + step * i as i64;
-                            let last = i + 1 == members.len();
-                            match m {
-                                Tok::Rest { .. } => {}
-                                Tok::Note { pitch, mark, .. } => self.place(
-                                    ti,
-                                    at,
-                                    step,
-                                    &[*pitch],
-                                    tie && last,
-                                    notation::apply_mark(base, *mark),
-                                ),
-                                Tok::Chord { pitches, mark, .. } => self.place(
-                                    ti,
-                                    at,
-                                    step,
-                                    pitches,
-                                    tie && last,
-                                    notation::apply_mark(base, *mark),
-                                ),
-                                Tok::Tuplet { .. } => unreachable!("tuplets don't nest"),
-                            }
-                        }
-                    }
-                }
-                cursor += dur;
-            }
-            if cursor != bar_end && cursor != bar_start {
-                return Err(raw(
-                    "bar-length",
-                    format!("voice covers {} of {cpb} cells", cells_display(cursor - bar_start)),
-                )
-                .hint(
-                    "every `&` voice must fill the bar exactly — pad with rests (z<n>) or \
-                       adjust durations",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_chordal(
-        &mut self,
-        ti: usize,
-        bar_start: u32,
-        cpb: u32,
-        content: &str,
-        base: u8,
-    ) -> Result<(), Raw> {
-        let cols = parse_chord_cols(content, cpb)?;
-        let mut current: Option<(Vec<u8>, u32, u32)> = None; // (pitches, start, dur)
-        let flush = |cur: &mut Option<(Vec<u8>, u32, u32)>, tracks: &mut Vec<QTrack>| {
-            if let Some((pitches, start, dur)) = cur.take() {
-                for pitch in pitches {
-                    tracks[ti].notes.push(QNote::from_cells(pitch, start, dur, base));
-                }
-            }
-        };
-        for (beat, col) in cols.into_iter().enumerate() {
-            match col {
-                ChordCol::Hold => {
-                    if let Some(c) = current.as_mut() {
-                        c.2 += 4;
-                    }
-                }
-                ChordCol::Rest => flush(&mut current, &mut self.tracks),
-                ChordCol::Sym(pitches) => {
-                    flush(&mut current, &mut self.tracks);
-                    current = Some((pitches, bar_start + beat as u32 * 4, 4));
-                }
-            }
-        }
-        flush(&mut current, &mut self.tracks);
-        Ok(())
-    }
-
-    fn apply_drums(&mut self, ti: usize, bar_start: u32, lanes: &[(u8, Vec<u8>)], base: u8) {
-        for (pitch, cells) in lanes {
-            for (i, code) in cells.iter().enumerate() {
-                let (vel, strokes) = match *code {
-                    LANE_ACCENT => (notation::apply_mark(base, Mark::Accent), 1),
-                    LANE_GHOST => (notation::apply_mark(base, Mark::Ghost), 1),
-                    LANE_HIT => (base, 1),
-                    LANE_D2 => (base, 2),
-                    LANE_D3 => (base, 3),
-                    LANE_D4 => (base, 4),
-                    _ => continue,
-                };
-                // One-shot on the 16th grid; the digit is a stroke count.
-                let mut hit = QNote::from_cells(*pitch, bar_start + i as u32, 1, vel);
-                hit.strokes = strokes;
-                self.tracks[ti].notes.push(hit);
-            }
-        }
-    }
-
-    fn apply(
-        &mut self,
-        ti: usize,
-        bar_start: u32,
-        cpb: u32,
-        body: &RecBody,
-        base: u8,
-    ) -> Result<(), Raw> {
-        match body {
-            RecBody::Melodic(s) => self.apply_melodic(ti, bar_start, cpb, s, base),
-            RecBody::Chordal(s) => self.apply_chordal(ti, bar_start, cpb, s, base),
-            RecBody::Drums(lanes) => {
-                self.apply_drums(ti, bar_start, lanes, base);
-                Ok(())
-            }
-        }
-    }
-}
-
-/// Check melodic token syntax and bar-sum without placing notes.
-fn validate_melodic(content: &str, cpb: u32) -> Result<(), Raw> {
+/// Parse and validate one melodic bar: every `&` voice must sum to the
+/// bar exactly (or be empty).
+fn parse_melodic_bar(content: &str, cpb: u32) -> Result<MelodicBar, Raw> {
     let bar = MusicalTime::from_sixteenths(cpb).ticks();
+    let mut voices = Vec::new();
     for voice in content.split('&') {
         let toks =
             notation::parse_tokens(voice).map_err(|m| raw("bad-token", m).hint(TOKEN_SHAPE))?;
@@ -438,8 +187,11 @@ fn validate_melodic(content: &str, cpb: u32) -> Result<(), Raw> {
                  durations",
             ));
         }
+        if !toks.is_empty() {
+            voices.push(toks);
+        }
     }
-    Ok(())
+    Ok(MelodicBar { voices })
 }
 
 fn parse_kin(tok: &str) -> Result<usize, Raw> {
@@ -529,8 +281,8 @@ fn parse_lane_cells(content: &str, cpb: u32) -> Result<Vec<u8>, Raw> {
     Ok(cells)
 }
 
-/// An arrangement row: `label: [P1+P2+z] x4` → (pattern ids, reps).
-fn parse_row(line: &str) -> Result<(Vec<usize>, u32), Raw> {
+/// An arrangement row: `label: [P1+P2+z] x4` → (label, pattern ids, reps).
+fn parse_row(line: &str) -> Result<(Option<String>, Vec<usize>, u32), Raw> {
     const ROW_SHAPE: &str = "arrangement rows look like `label: [P1+P2] x4` or `[z]`";
     let open = line
         .find('[')
@@ -541,6 +293,7 @@ fn parse_row(line: &str) -> Result<(Vec<usize>, u32), Raw> {
             .hint("row labels end with `:`, e.g. `chorus: [P1] x4`")
             .at(label));
     }
+    let label = label.strip_suffix(':').map(|l| l.trim_end().to_string());
     let rest = &line[open + 1..];
     let (inner, after) =
         rest.split_once(']').ok_or_else(|| raw("bad-row", "unclosed `[`").hint(ROW_SHAPE))?;
@@ -575,11 +328,29 @@ fn parse_row(line: &str) -> Result<(Vec<usize>, u32), Raw> {
             .hint(ROW_SHAPE)
             .at(junk));
     }
-    Ok((ids, reps))
+    Ok((label, ids, reps))
+}
+
+/// Where a drum-lane block will land once complete.
+enum BlockTarget {
+    Pattern(usize),
+    Direct(u32), // bar number (1-based)
+}
+
+struct DrumBlock {
+    track: usize,
+    target: BlockTarget,
+    /// Line the block opened on (for diagnostics at flush time).
+    line: usize,
+    /// Base velocity from the `@dyn` mark.
+    base_vel: u8,
+    /// Variant base: lanes not listed here are inherited from it.
+    variant_base: Option<usize>,
+    lanes: Vec<(u8, Vec<u8>)>,
 }
 
 /// `P<n>` / `b<n>` head token → block target, with bar-number limits.
-fn parse_head(head: &str, max_bar: &mut u32) -> Result<BlockTarget, Raw> {
+fn parse_head(head: &str) -> Result<BlockTarget, Raw> {
     if let Some(id) = head.strip_prefix('P').and_then(|n| n.parse().ok()) {
         return Ok(BlockTarget::Pattern(id));
     }
@@ -592,7 +363,6 @@ fn parse_head(head: &str, max_bar: &mut u32) -> Result<BlockTarget, Raw> {
                 raw("too-large", format!("bar {bar} is beyond the {MAX_BARS}-bar limit")).at(head)
             );
         }
-        *max_bar = (*max_bar).max(bar);
         return Ok(BlockTarget::Direct(bar));
     }
     Err(raw("bad-line", format!("expected P<n> or b<n>, got {head:?}"))
@@ -600,16 +370,21 @@ fn parse_head(head: &str, max_bar: &mut u32) -> Result<BlockTarget, Raw> {
         .at(head))
 }
 
-pub fn parse(text: &str) -> Result<QSong, Error> {
+/// Parse `.ls` text into its faithful AST. Every structural error is
+/// caught here with a line-accurate diagnostic; the returned Document
+/// resolves without error.
+pub fn parse_document(text: &str) -> Result<Document, Error> {
     let mut header: Option<Header> = None;
-    let mut b = Builder::default();
-    let mut patterns: HashMap<usize, PatternRec> = HashMap::new();
+    let mut instruments: Vec<Instrument> = Vec::new();
+    let mut track_index: HashMap<String, usize> = HashMap::new();
+    let mut patterns: Vec<PatternDef> = Vec::new();
+    let mut pattern_index: HashMap<usize, usize> = HashMap::new(); // id → patterns idx
+    let mut timeline: Vec<TimelineItem> = Vec::new();
     let mut pending: Option<DrumBlock> = None;
-    let mut next_bar = 0u32; // arrangement cursor
-    let mut max_bar = 0u32; // from direct `b<n>` lines
+    let mut next_bar = 0u32; // arrangement cursor (for the MAX_BARS cap)
 
-    let known_patterns = |patterns: &HashMap<usize, PatternRec>| -> String {
-        let mut ids: Vec<usize> = patterns.keys().copied().collect();
+    let known_patterns = |pattern_index: &HashMap<usize, usize>| -> String {
+        let mut ids: Vec<usize> = pattern_index.keys().copied().collect();
         ids.sort_unstable();
         if ids.is_empty() {
             "no patterns are defined yet".into()
@@ -620,59 +395,69 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             )
         }
     };
+    let known_instruments = |instruments: &[Instrument]| -> String {
+        if instruments.is_empty() {
+            "no instruments are declared — add them to the `# instruments:` header line".into()
+        } else {
+            format!(
+                "declared instruments: {}",
+                instruments.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(" ")
+            )
+        }
+    };
 
-    // Flushing a completed drum block, shared by the loop and EOF.
+    // Flushing a completed drum block, shared by the loop and EOF. The
+    // variant base is validated here but lanes stay as the written diff.
     fn flush_block(
         block: DrumBlock,
-        patterns: &mut HashMap<usize, PatternRec>,
-        b: &mut Builder,
-        cpb: u32,
+        patterns: &mut Vec<PatternDef>,
+        pattern_index: &mut HashMap<usize, usize>,
+        timeline: &mut Vec<TimelineItem>,
     ) -> Result<(), Raw> {
-        // Resolve a variant against its base: unlisted lanes are inherited,
-        // listed ones replace (an all-dots lane clears a base lane).
-        let lanes = match block.base {
-            None => block.lanes,
-            Some(base_id) => {
-                let base = patterns.get(&base_id).ok_or_else(|| {
-                    raw("unknown-pattern", format!("unknown variant base P{base_id}"))
-                        .hint("the ~P base must be a drum pattern defined earlier in the file")
-                })?;
-                if base.track != block.track {
-                    return Err(raw(
-                        "bad-variant",
-                        format!("variant base P{base_id} is a different instrument"),
-                    )
-                    .hint("a variant inherits lanes, so base and variant must share a kit"));
-                }
-                let [RecBody::Drums(base_lanes)] = base.bars.as_slice() else {
-                    return Err(raw(
-                        "bad-variant",
-                        format!("variant base P{base_id} is not a drum pattern"),
-                    )
-                    .hint("drum lane inheritance needs a drum-pattern base"));
-                };
-                let mut merged = base_lanes.clone();
-                for (pitch, cells) in block.lanes {
-                    merged.retain(|(p, _)| *p != pitch);
-                    merged.push((pitch, cells));
-                }
-                merged
+        if let Some(base_id) = block.variant_base {
+            let base = pattern_index.get(&base_id).map(|i| &patterns[*i]).ok_or_else(|| {
+                raw("unknown-pattern", format!("unknown variant base P{base_id}"))
+                    .hint("the ~P base must be a drum pattern defined earlier in the file")
+            })?;
+            if base.track != block.track {
+                return Err(raw(
+                    "bad-variant",
+                    format!("variant base P{base_id} is a different instrument"),
+                )
+                .hint("a variant inherits lanes, so base and variant must share a kit"));
             }
-        };
+            if !matches!(base.body, PatternBody::Drums(_)) {
+                return Err(raw(
+                    "bad-variant",
+                    format!("variant base P{base_id} is not a drum pattern"),
+                )
+                .hint("drum lane inheritance needs a drum-pattern base"));
+            }
+        }
+        let body =
+            PatternBody::Drums(DrumsBody { variant_base: block.variant_base, lanes: block.lanes });
         match block.target {
             BlockTarget::Pattern(id) => {
-                let rec = PatternRec {
-                    track: block.track,
-                    base: block.base_vel,
-                    bars: vec![RecBody::Drums(lanes)],
-                };
-                if patterns.insert(id, rec).is_some() {
+                if pattern_index.contains_key(&id) {
                     return Err(raw("duplicate-pattern", format!("duplicate pattern P{id}"))
                         .hint("every P<n> must be unique — renumber this one"));
                 }
+                pattern_index.insert(id, patterns.len());
+                patterns.push(PatternDef {
+                    id,
+                    track: block.track,
+                    base_vel: block.base_vel,
+                    kin: None,
+                    body,
+                });
             }
             BlockTarget::Direct(bar) => {
-                b.apply(block.track, (bar - 1) * cpb, cpb, &RecBody::Drums(lanes), block.base_vel)?;
+                timeline.push(TimelineItem::Direct(DirectItem {
+                    bar,
+                    track: block.track,
+                    base_vel: block.base_vel,
+                    body,
+                }));
             }
         }
         Ok(())
@@ -686,7 +471,7 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             continue;
         }
 
-        let cpb = header.as_ref().map(|h| h.meter.0 * 16 / h.meter.1).unwrap_or(16);
+        let cpb = header.as_ref().map(|h| h.cells_per_bar()).unwrap_or(16);
 
         // Lane lines extend a pending drum block; anything else closes it.
         if let Some(block) = &mut pending {
@@ -710,11 +495,13 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             }
             let block = pending.take().unwrap();
             let opened = block.line;
-            flush_block(block, &mut patterns, &mut b, cpb).map_err(|r| diag(opened, "", r))?;
+            flush_block(block, &mut patterns, &mut pattern_index, &mut timeline)
+                .map_err(|r| diag(opened, "", r))?;
         }
 
         if let Some(rest) = line.strip_prefix('#') {
-            parse_header_line(rest, &mut header, &mut b).map_err(err)?;
+            parse_header_line(rest, &mut header, &mut instruments, &mut track_index)
+                .map_err(err)?;
             continue;
         }
         if line == "arrangement:" {
@@ -730,20 +517,20 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         // Arrangement row?
         let before_pipe = line.split('|').next().unwrap_or(line);
         if before_pipe.contains('[') {
-            let (ids, reps) = parse_row(line).map_err(err)?;
+            let (label, ids, reps) = parse_row(line).map_err(err)?;
             // Row unit = the longest pattern; 1-bar patterns repeat per bar,
             // longer ones must all agree on the unit length.
             let mut unit = 1u32;
             for id in &ids {
-                let p = patterns.get(id).ok_or_else(|| {
+                let p = pattern_index.get(id).map(|i| &patterns[*i]).ok_or_else(|| {
                     err(raw("unknown-pattern", format!("unknown pattern P{id}"))
-                        .hint(known_patterns(&patterns))
+                        .hint(known_patterns(&pattern_index))
                         .at(format!("P{id}")))
                 })?;
-                unit = unit.max(p.bars.len() as u32);
+                unit = unit.max(p.body.n_bars());
             }
             for id in &ids {
-                let len = patterns[id].bars.len() as u32;
+                let len = patterns[pattern_index[id]].body.n_bars();
                 if len != 1 && len != unit {
                     return Err(err(raw(
                         "pattern-length",
@@ -759,19 +546,8 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             if next_bar as u64 + reps as u64 * unit as u64 > MAX_BARS as u64 {
                 return Err(err(raw("too-large", format!("arrangement exceeds {MAX_BARS} bars"))));
             }
-            for _ in 0..reps {
-                for offset in 0..unit {
-                    for id in &ids {
-                        let p = &patterns[id];
-                        let track = p.track;
-                        let body =
-                            if p.bars.len() == 1 { &p.bars[0] } else { &p.bars[offset as usize] };
-                        b.apply(track, (next_bar + offset) * cpb, cpb, body, p.base)
-                            .map_err(err)?;
-                    }
-                }
-                next_bar += unit;
-            }
+            next_bar += reps * unit;
+            timeline.push(TimelineItem::Row(Row { label, stack: ids, reps }));
             continue;
         }
 
@@ -779,7 +555,7 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             // Drum block opener: `P2 drums`, `b3 drums@p`, or `P8 drums ~P3`.
             let mut parts = line.split_whitespace();
             let (head, inst) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-            let base = match parts.next() {
+            let variant_base = match parts.next() {
                 None => None,
                 Some(tok) => Some(parse_kin(tok).map_err(err)?),
             };
@@ -793,12 +569,12 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             if chordal {
                 return Err(err(raw("bad-line", "drum patterns cannot be chord-mode (`*`)")));
             }
-            let ti = *b.track_index.get(inst).ok_or_else(|| {
+            let ti = *track_index.get(inst).ok_or_else(|| {
                 err(raw("unknown-instrument", format!("unknown instrument {inst:?}"))
-                    .hint(known_instruments(&b))
+                    .hint(known_instruments(&instruments))
                     .at(inst))
             })?;
-            if !b.tracks[ti].is_drums {
+            if !instruments[ti].is_drums {
                 return Err(err(raw("not-a-kit", format!("{inst:?} is not a drum kit"))
                     .hint(format!(
                         "{inst:?} is a melodic program; drum lanes need an instrument declared \
@@ -806,13 +582,13 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
                     ))
                     .at(inst)));
             }
-            let target = parse_head(head, &mut max_bar).map_err(err)?;
+            let target = parse_head(head).map_err(err)?;
             pending = Some(DrumBlock {
                 track: ti,
                 target,
                 line: lineno,
                 base_vel,
-                base,
+                variant_base,
                 lanes: Vec::new(),
             });
             continue;
@@ -821,16 +597,16 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         // Pattern definition or direct bar line. `content` may span several
         // bars separated by `|`.
         let (head, inst, chordal, base_vel, kin, content) = split_music_line(line).map_err(err)?;
-        let ti = *b.track_index.get(inst).ok_or_else(|| {
+        let ti = *track_index.get(inst).ok_or_else(|| {
             err(raw("unknown-instrument", format!("unknown instrument {inst:?}"))
-                .hint(known_instruments(&b))
+                .hint(known_instruments(&instruments))
                 .at(inst))
         })?;
         // Melodic/chordal kinship is informational; just sanity-check it.
         if let Some(base_id) = kin {
-            let base = patterns.get(&base_id).ok_or_else(|| {
+            let base = pattern_index.get(&base_id).map(|i| &patterns[*i]).ok_or_else(|| {
                 err(raw("unknown-pattern", format!("unknown variant base P{base_id}"))
-                    .hint(known_patterns(&patterns)))
+                    .hint(known_patterns(&pattern_index)))
             })?;
             if base.track != ti {
                 return Err(err(raw(
@@ -839,39 +615,40 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
                 )));
             }
         }
-        let bars: Vec<RecBody> = content
-            .split('|')
-            .map(|seg| {
-                if chordal {
-                    parse_chord_cols(seg, cpb)?;
-                    Ok(RecBody::Chordal(seg.trim().to_string()))
-                } else {
-                    validate_melodic(seg, cpb)?;
-                    Ok(RecBody::Melodic(seg.trim().to_string()))
-                }
-            })
-            .collect::<Result<_, Raw>>()
-            .map_err(err)?;
-        match parse_head(head, &mut max_bar).map_err(err)? {
+        let body = if chordal {
+            let bars = content
+                .split('|')
+                .map(|seg| parse_chord_cols(seg, cpb))
+                .collect::<Result<Vec<_>, Raw>>()
+                .map_err(err)?;
+            PatternBody::Chordal(bars)
+        } else {
+            let bars = content
+                .split('|')
+                .map(|seg| parse_melodic_bar(seg, cpb))
+                .collect::<Result<Vec<_>, Raw>>()
+                .map_err(err)?;
+            PatternBody::Melodic(bars)
+        };
+        match parse_head(head).map_err(err)? {
             BlockTarget::Pattern(id) => {
-                if patterns.insert(id, PatternRec { track: ti, base: base_vel, bars }).is_some() {
+                if pattern_index.contains_key(&id) {
                     return Err(err(raw("duplicate-pattern", format!("duplicate pattern P{id}"))
                         .hint("every P<n> must be unique — renumber this one")
                         .at(head)));
                 }
+                pattern_index.insert(id, patterns.len());
+                patterns.push(PatternDef { id, track: ti, base_vel, kin, body });
             }
             BlockTarget::Direct(bar) => {
-                if bar as u64 + bars.len() as u64 - 1 > MAX_BARS as u64 {
+                if bar as u64 + body.n_bars() as u64 - 1 > MAX_BARS as u64 {
                     return Err(err(raw(
                         "too-large",
                         format!("bars beyond the {MAX_BARS}-bar limit"),
                     )
                     .at(head)));
                 }
-                for (i, body) in bars.iter().enumerate() {
-                    b.apply(ti, (bar - 1 + i as u32) * cpb, cpb, body, base_vel).map_err(err)?;
-                }
-                max_bar = max_bar.max(bar + bars.len() as u32 - 1);
+                timeline.push(TimelineItem::Direct(DirectItem { bar, track: ti, base_vel, body }));
             }
         }
     }
@@ -886,41 +663,26 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             ),
         )
     })?;
-    let cpb = header.meter.0 * 16 / header.meter.1;
     if let Some(block) = pending.take() {
         let opened = block.line;
-        flush_block(block, &mut patterns, &mut b, cpb).map_err(|r| diag(opened, "", r))?;
+        flush_block(block, &mut patterns, &mut pattern_index, &mut timeline)
+            .map_err(|r| diag(opened, "", r))?;
     }
-    let mut max_end = MusicalTime::ZERO;
-    for t in &mut b.tracks {
-        t.notes.sort_by(|a, b| a.onset.cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
-        for n in &t.notes {
-            max_end = max_end.max(n.onset + n.dur);
-        }
-    }
-    Ok(QSong {
-        name: header.name,
-        bpm: header.bpm,
-        meter: header.meter,
-        key: header.key,
-        swing: header.swing,
-        n_bars: max_end.spans_ceil(MusicalTime::from_sixteenths(cpb)).max(next_bar).max(max_bar),
-        tracks: b.tracks,
-    })
+    Ok(Document { header, instruments, patterns, timeline })
 }
 
-fn known_instruments(b: &Builder) -> String {
-    if b.tracks.is_empty() {
-        "no instruments are declared — add them to the `# instruments:` header line".into()
-    } else {
-        format!(
-            "declared instruments: {}",
-            b.tracks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(" ")
-        )
-    }
+/// Text → compiled `QSong` (the historical entry point):
+/// [`parse_document`] followed by [`Document::resolve`].
+pub fn parse(text: &str) -> Result<QSong, Error> {
+    parse_document(text)?.resolve()
 }
 
-fn parse_header_line(rest: &str, header: &mut Option<Header>, b: &mut Builder) -> Result<(), Raw> {
+fn parse_header_line(
+    rest: &str,
+    header: &mut Option<Header>,
+    instruments: &mut Vec<Instrument>,
+    track_index: &mut HashMap<String, usize>,
+) -> Result<(), Raw> {
     const HEADER_SHAPE: &str =
         "the song line is `# song: NAME  tempo: BPM  meter: N/D  key: K  grid: 1/16`";
     let rest = rest.trim();
@@ -1073,13 +835,13 @@ fn parse_header_line(rest: &str, header: &mut Option<Header>, b: &mut Builder) -
                     false,
                 )
             };
-            if b.track_index.contains_key(name) {
+            if track_index.contains_key(name) {
                 return Err(
                     raw("duplicate-instrument", format!("duplicate instrument {name:?}")).at(name)
                 );
             }
-            b.track_index.insert(name.to_string(), b.tracks.len());
-            b.tracks.push(QTrack { name: name.to_string(), program, is_drums, notes: Vec::new() });
+            track_index.insert(name.to_string(), instruments.len());
+            instruments.push(Instrument { name: name.to_string(), program, is_drums });
         }
         return Ok(());
     }

@@ -456,20 +456,22 @@ fn arb_tok() -> impl Strategy<Value = notation::Tok> {
                 mark,
             }),
         1 => (1i64..=4000).prop_map(|t| Tok::Rest { dur: MusicalTime(t) }),
-        2 => (2u32..=24, 1i64..=960, any::<bool>()).prop_flat_map(|(n, step, tie)| {
+        2 => (2u32..=24, 2i64..=8000, any::<bool>()).prop_flat_map(|(n, span, tie)| {
             prop::collection::vec(arb_member(), n as usize..=n as usize).prop_map(
                 move |mut members| {
-                    let step = MusicalTime(step);
-                    for m in &mut members {
+                    let span = MusicalTime(span.max(n as i64));
+                    for (i, m) in members.iter_mut().enumerate() {
+                        let dur = notation::tuplet_boundary(span, n, i as u32 + 1)
+                            - notation::tuplet_boundary(span, n, i as u32);
                         match m {
-                            Tok::Note { dur, .. }
-                            | Tok::Chord { dur, .. }
-                            | Tok::Rest { dur } => *dur = step,
+                            Tok::Note { dur: d, .. }
+                            | Tok::Chord { dur: d, .. }
+                            | Tok::Rest { dur: d } => *d = dur,
                             Tok::Tuplet { .. } => unreachable!(),
                         }
                     }
                     let tie = tie && !matches!(members.last(), Some(Tok::Rest { .. }));
-                    Tok::Tuplet { n, members, span: step * n as i64, tie }
+                    Tok::Tuplet { n, members, span, tie }
                 },
             )
         }),
