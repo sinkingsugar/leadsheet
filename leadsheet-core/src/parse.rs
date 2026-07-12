@@ -557,7 +557,8 @@ fn parse_row(line: &str) -> Result<(Vec<usize>, u32), Raw> {
         })?;
         ids.push(id);
     }
-    let reps = match after.split_whitespace().next() {
+    let mut after_toks = after.split_whitespace();
+    let reps = match after_toks.next() {
         None => 1,
         Some(x) => {
             x.strip_prefix('x').and_then(|n| n.parse::<u32>().ok()).filter(|n| *n >= 1).ok_or_else(
@@ -569,6 +570,11 @@ fn parse_row(line: &str) -> Result<(Vec<usize>, u32), Raw> {
             )?
         }
     };
+    if let Some(junk) = after_toks.next() {
+        return Err(raw("bad-row", format!("unexpected {junk:?} after the row"))
+            .hint(ROW_SHAPE)
+            .at(junk));
+    }
     Ok((ids, reps))
 }
 
@@ -953,6 +959,20 @@ fn parse_header_line(rest: &str, header: &mut Option<Header>, b: &mut Builder) -
                     pending = Some(nxt);
                 }
             }
+        }
+        for k in fields_map.keys() {
+            if !matches!(*k, "meter" | "key" | "swing" | "grid" | "swing2") {
+                return Err(raw(
+                    "unknown-header-field",
+                    format!("unknown field {k:?} on the song line"),
+                )
+                .hint("song-line fields are: tempo, meter, key, swing, grid")
+                .at(*k));
+            }
+        }
+        if fields_map.contains_key("swing2") && !fields_map.contains_key("swing") {
+            return Err(raw("bad-swing", "stray percent value without `swing:`")
+                .hint("swing is `swing: 66%` or `swing: 16th 58%`"));
         }
         const METER_HINT: &str = "meter is N/D with D = 4 or 8, e.g. 4/4, 3/4, 6/8";
         let meter = match fields_map.get("meter") {

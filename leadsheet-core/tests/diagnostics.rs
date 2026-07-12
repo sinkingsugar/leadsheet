@@ -173,3 +173,30 @@ fn diagnostics_serialize_for_check_json() {
     assert!(json["message"].as_str().unwrap().contains("D8"));
     assert!(json["suggestion"].as_str().unwrap().len() > 10);
 }
+
+#[test]
+fn unknown_header_field_is_an_error_not_a_default() {
+    // `metre:` (typo) must not silently yield 4/4.
+    let d = expect(
+        "# song: x  tempo: 120  metre: 3/4\n# instruments: p:0\nb1 p | C16 |\n",
+        "unknown-header-field",
+        1,
+        "meter",
+    );
+    assert!(d.message.contains("metre"), "{d}");
+    assert!(d.col > 0, "{d}");
+    // Stray swing percent without the key.
+    expect("# song: x  tempo: 120  58%\n# instruments: p:0\nb1 p | C16 |\n", "bad-swing", 1, "66%");
+}
+
+#[test]
+fn trailing_row_junk_is_an_error() {
+    let d = expect(
+        &format!("{HEAD}P1 piano | C16 |\narrangement:\n  [P1] x4 garbage\n"),
+        "bad-row",
+        5,
+        "[z]",
+    );
+    assert!(d.message.contains("garbage"), "{d}");
+    assert!(d.col > 0, "{d}");
+}
