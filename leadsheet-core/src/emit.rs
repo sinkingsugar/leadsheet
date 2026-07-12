@@ -40,14 +40,34 @@ struct Seg {
     vel: u8,
     tie_in: bool,
     tie_out: bool,
+    /// Index of the source note in its track (ties a note's segments
+    /// together across bars for velocity reconstruction).
+    note: usize,
 }
 
-/// Median velocity of a bar, bucketed to a dynamic level.
-fn base_velocity(segs: &[Seg]) -> u8 {
-    let mut vels: Vec<u8> = segs.iter().map(|s| s.vel).collect();
-    vels.sort_unstable();
-    let median = vels[(vels.len() - 1) / 2];
-    notation::vel_to_dynamic(median).1
+/// A bar's base dynamic: the bucketed median over mark *groups* — one vote
+/// per melodic token (a chord counts once, at its group median) or per drum
+/// hit. Voting per group rather than per note makes emission a fixpoint:
+/// marks are per token, so re-deriving the base from the reconstructed
+/// (base ± delta) velocities lands on the same bucket, byte for byte.
+fn base_velocity(segs: &[Seg], is_drums: bool) -> u8 {
+    let mut votes: Vec<u8> = if is_drums {
+        segs.iter().map(|s| s.vel).collect()
+    } else {
+        let mut groups: BTreeMap<(u32, u32, bool), Vec<u8>> = BTreeMap::new();
+        for s in segs {
+            groups.entry((s.cell, s.dur, s.tie_out)).or_default().push(s.vel);
+        }
+        groups
+            .into_values()
+            .map(|mut v| {
+                v.sort_unstable();
+                v[(v.len() - 1) / 2]
+            })
+            .collect()
+    };
+    votes.sort_unstable();
+    notation::vel_to_dynamic(votes[(votes.len() - 1) / 2]).1
 }
 
 /// Split a track's notes at bar boundaries: per-bar segment lists.
@@ -55,7 +75,7 @@ fn base_velocity(segs: &[Seg]) -> u8 {
 /// [`crate::grid::QNote`]), carried through in `Seg::dur`.
 fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> {
     let mut bars: Vec<Vec<Seg>> = (0..n_bars).map(|_| Vec::new()).collect();
-    for n in &track.notes {
+    for (note, n) in track.notes.iter().enumerate() {
         if track.is_drums {
             let bar = n.cell / cells_per_bar;
             if let Some(slot) = bars.get_mut(bar as usize) {
@@ -66,6 +86,7 @@ fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> 
                     vel: n.vel,
                     tie_in: false,
                     tie_out: false,
+                    note,
                 });
             }
             continue;
@@ -84,12 +105,36 @@ fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> 
                     vel: n.vel,
                     tie_in: cell > n.cell,
                     tie_out: seg_end < end,
+                    note,
                 });
             }
             cell = seg_end;
         }
     }
     bars
+}
+
+/// After a bar's base is fixed, record the velocity parse will reconstruct
+/// for each note that *starts* in it: base ± the group's mark delta. Later
+/// bars' tie-in segments vote and mark with this value, so every generation
+/// derives identical dynamics (marks are grouped exactly like
+/// [`bar_voices`] groups tokens).
+fn record_reconstructed_vels(segs: &[Seg], base: u8, recon: &mut [Option<u8>]) {
+    let mut groups: BTreeMap<(u32, u32, bool), Vec<&Seg>> = BTreeMap::new();
+    for s in segs {
+        groups.entry((s.cell, s.dur, s.tie_out)).or_default().push(s);
+    }
+    for group in groups.values() {
+        let mut vels: Vec<u8> = group.iter().map(|s| s.vel).collect();
+        vels.sort_unstable();
+        let mark = notation::mark_for_vel(vels[(vels.len() - 1) / 2], base);
+        let v = notation::apply_mark(base, mark);
+        for s in group {
+            if !s.tie_in {
+                recon[s.note] = Some(v);
+            }
+        }
+    }
 }
 
 /// Render one bar's segments as melodic voice strings (usually one voice).
@@ -373,24 +418,41 @@ pub fn emit(q: &QSong) -> String {
         .tracks
         .iter()
         .map(|t| {
+            // Reconstructed velocity per note (see record_reconstructed_vels).
+            let mut recon: Vec<Option<u8>> = vec![None; t.notes.len()];
             split_bars(t, cpb, q.n_bars)
-                .iter()
-                .map(|segs| {
+                .into_iter()
+                .map(|mut segs| {
                     if segs.is_empty() {
                         return None;
                     }
-                    let base = base_velocity(segs);
+                    // Tie-in segments vote and mark with the velocity parse
+                    // will assign them (fixed where the note started).
+                    for s in &mut segs {
+                        if s.tie_in
+                            && let Some(v) = recon[s.note]
+                        {
+                            s.vel = v;
+                        }
+                    }
+                    let base = base_velocity(&segs, t.is_drums);
+                    if !t.is_drums {
+                        record_reconstructed_vels(&segs, base, &mut recon);
+                    }
                     Some(if t.is_drums {
-                        Body::Drums { base, lanes: drum_lane_map(segs, cpb, base) }
+                        Body::Drums { base, lanes: drum_lane_map(&segs, cpb, base) }
                     } else if let Some(c) =
                         // Chord columns are quarter-note beats; only /4 meters.
                         (q.meter.1 == 4)
-                            .then(|| try_chordal(segs, cpb, flats))
+                            .then(|| try_chordal(&segs, cpb, flats))
                             .flatten()
                     {
                         Body::Chordal { base, text: c }
                     } else {
-                        Body::Melodic { base, text: bar_voices(segs, cpb, flats, base).join(" & ") }
+                        Body::Melodic {
+                            base,
+                            text: bar_voices(&segs, cpb, flats, base).join(" & "),
+                        }
                     })
                 })
                 .collect()
