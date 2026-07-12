@@ -155,12 +155,7 @@ fn check_task(task: &Path) -> Result<Vec<CheckResult>> {
                     "matches" => {
                         let f = c["file"].as_str().context("file")?;
                         let target = parse::parse(&std::fs::read_to_string(task.join(f))?)?;
-                        let mut ok = q.n_bars == target.n_bars;
-                        for t in &target.tracks {
-                            ok &=
-                                notes_of(q, &t.name) == t.notes.iter().map(key).collect::<Vec<_>>();
-                        }
-                        (ok, Some("differs from the target".into()))
+                        matches_exactly(q, &target)
                     }
                     _ => bail!("unknown constraint type {other:?}"),
                 }
@@ -169,6 +164,40 @@ fn check_task(task: &Path) -> Result<Vec<CheckResult>> {
         results.push((ty.to_string(), ok, detail));
     }
     Ok(results)
+}
+
+/// Note-exact equality in BOTH directions (C1): a canonical map per
+/// side, so an invented extra track fails just like a missing one.
+/// Header tempo/key are deliberately out of scope — `matches` checks
+/// musical content; header constraints can become their own type when a
+/// task needs them (meter is covered indirectly: it shifts `n_bars`).
+fn matches_exactly(q: &QSong, target: &QSong) -> (bool, Option<String>) {
+    if q.n_bars != target.n_bars {
+        return (false, Some(format!("{} bars, wanted {}", q.n_bars, target.n_bars)));
+    }
+    let map = |q: &QSong| -> std::collections::BTreeMap<String, (u8, bool, Vec<NoteKey>)> {
+        q.tracks
+            .iter()
+            .map(|t| (t.name.clone(), (t.program, t.is_drums, t.notes.iter().map(key).collect())))
+            .collect()
+    };
+    let (got, want) = (map(q), map(target));
+    for name in want.keys() {
+        if !got.contains_key(name) {
+            return (false, Some(format!("missing track {name:?}")));
+        }
+    }
+    for name in got.keys() {
+        if !want.contains_key(name) {
+            return (false, Some(format!("unexpected extra track {name:?}")));
+        }
+    }
+    for (name, t) in &want {
+        if got[name] != *t {
+            return (false, Some(format!("track {name:?} differs from the target")));
+        }
+    }
+    (true, None)
 }
 
 type NoteKey = (u8, i64, i64, u8);

@@ -174,4 +174,35 @@ fn eval_harness_passes_on_sample_outputs() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("FAIL  transpose-up-2 :: pitch_shift"));
     let _ = std::fs::remove_dir_all(&tmp);
+
+    // C1: `matches` is note-exact in BOTH directions — an answer that
+    // contains every target track plus an invented extra one must FAIL,
+    // and so must a renamed track.
+    let repair = dir.join("repair");
+    let target = std::fs::read_to_string(repair.join("target.ls")).unwrap();
+    for (label, wrong) in [
+        (
+            "extra track",
+            target
+                .replace("# instruments: lead:81", "# instruments: lead:81 ghost:0")
+                .replace("b1 lead | e4 c4 d4 B4 |", "b1 lead | e4 c4 d4 B4 |\nb1 ghost | C16 |"),
+        ),
+        ("renamed track", target.replace("lead", "solo")),
+    ] {
+        let task = tmp.join("repair");
+        std::fs::create_dir_all(&task).unwrap();
+        for f in ["input.ls", "instruction.txt", "constraints.json", "target.ls"] {
+            std::fs::copy(repair.join(f), task.join(f)).unwrap();
+        }
+        std::fs::write(task.join("output.ls"), &wrong).unwrap();
+        let out = bin().args(["eval"]).arg(&tmp).output().unwrap();
+        no_panic(&out);
+        assert!(!out.status.success(), "{label} must fail");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("FAIL  repair :: matches"),
+            "{label}:\n{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
