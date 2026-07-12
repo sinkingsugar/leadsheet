@@ -94,7 +94,7 @@ fn synth_song(bpm: f64, offset_sec: f64, bars: u32, jitter_ms: f64, seed: u64) -
         mk("melody", 81, false, melody),
     ];
     SynthSong {
-        song: RawSong { name: "synth".into(), tracks, source_bpm: None },
+        song: RawSong { name: "synth".into(), tracks, source_bpm: None, source_meter: None },
         truth,
     }
 }
@@ -218,6 +218,133 @@ fn auto_switch_when_declared_tempo_lies() {
     assert_eq!(report.tempo_source, TempoSource::Declared);
 }
 
+/// A waltz: bass root on beat 1, chord stabs on 2 and 3, kick/snare-snare,
+/// quarter-note melody. 12 cells per bar.
+fn synth_waltz(bpm: f64, bars: u32, jitter_ms: f64, seed: u64) -> RawSong {
+    let cell = 60.0 / (bpm * 4.0);
+    let mut rng = Lcg(seed);
+    let mut bass = Vec::new();
+    let mut drums = Vec::new();
+    let mut piano = Vec::new();
+    for b in 0..bars {
+        let base = (b * 12) as f64 * cell;
+        let root: u8 = [38, 43, 45, 43][(b % 4) as usize];
+        bass.push(RawNote { pitch: root, onset: base + rng.jitter(jitter_ms), dur: 11.0 * cell, vel: 96 });
+        drums.push(RawNote { pitch: 36, onset: base + rng.jitter(jitter_ms), dur: 0.08, vel: 100 });
+        for beat in [4u32, 8] {
+            drums.push(RawNote {
+                pitch: 38,
+                onset: base + beat as f64 * cell + rng.jitter(jitter_ms),
+                dur: 0.06,
+                vel: 80,
+            });
+            for p in [62u8, 65, 69] {
+                piano.push(RawNote {
+                    pitch: p,
+                    onset: base + beat as f64 * cell + rng.jitter(jitter_ms),
+                    dur: 3.0 * cell,
+                    vel: 85,
+                });
+            }
+        }
+    }
+    let mk = |name: &str, program: u8, is_drums: bool, mut notes: Vec<RawNote>| {
+        notes.sort_by(|a, b| a.onset.total_cmp(&b.onset));
+        RawTrack { name: name.into(), program, is_drums, notes }
+    };
+    RawSong {
+        name: "waltz".into(),
+        tracks: vec![
+            mk("bass", 32, false, bass),
+            mk("drums", 0, true, drums),
+            mk("piano", 0, false, piano),
+        ],
+        source_bpm: None,
+        source_meter: None,
+    }
+}
+
+#[test]
+fn detects_three_four() {
+    let song = synth_waltz(140.0, 16, 8.0, 5150);
+    let (q, report) =
+        quantize(&song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
+    assert!((report.bpm - 140.0).abs() <= 1.5, "bpm {:.2}", report.bpm);
+    assert_eq!(q.meter, (3, 4), "waltz must be 3/4");
+    assert_eq!(q.cells_per_bar(), 12);
+    // Downbeat on the bar line: bass onsets at cell ≡ 0 (mod 12).
+    let bass = &q.tracks[0];
+    let on_downbeat =
+        bass.notes.iter().filter(|n| n.cell % 12 == 0).count() as f64 / bass.notes.len() as f64;
+    assert!(on_downbeat > 0.9, "downbeat rate {on_downbeat:.2}");
+}
+
+#[test]
+fn detects_six_eight() {
+    // A jig: kick on 1, snare on the second dotted-quarter beat (cell 6),
+    // 8th-note pulse on cells 0,2,4,6,8,10.
+    let bpm = 120.0;
+    let cell = 60.0 / (bpm * 4.0);
+    let mut rng = Lcg(303);
+    let mut drums = Vec::new();
+    let mut bass = Vec::new();
+    let mut lead = Vec::new();
+    for b in 0..16u32 {
+        let base = (b * 12) as f64 * cell;
+        drums.push(RawNote { pitch: 36, onset: base + rng.jitter(6.0), dur: 0.08, vel: 100 });
+        drums.push(RawNote {
+            pitch: 38,
+            onset: base + 6.0 * cell + rng.jitter(6.0),
+            dur: 0.06,
+            vel: 90,
+        });
+        for i in 0..6u32 {
+            drums.push(RawNote {
+                pitch: 42,
+                onset: base + (i * 2) as f64 * cell + rng.jitter(6.0),
+                dur: 0.05,
+                vel: 70,
+            });
+        }
+        bass.push(RawNote { pitch: 43, onset: base + rng.jitter(6.0), dur: 11.0 * cell, vel: 96 });
+        for (i, p) in [67u8, 71, 74, 67, 72, 74].iter().enumerate() {
+            lead.push(RawNote {
+                pitch: *p,
+                onset: base + (i as u32 * 2) as f64 * cell + rng.jitter(6.0),
+                dur: 2.0 * cell,
+                vel: 90,
+            });
+        }
+    }
+    let mk = |name: &str, program: u8, is_drums: bool, mut notes: Vec<RawNote>| {
+        notes.sort_by(|a, b| a.onset.total_cmp(&b.onset));
+        RawTrack { name: name.into(), program, is_drums, notes }
+    };
+    let song = RawSong {
+        name: "jig".into(),
+        tracks: vec![
+            mk("bass", 32, false, bass),
+            mk("drums", 0, true, drums),
+            mk("lead", 73, false, lead),
+        ],
+        source_bpm: None,
+        source_meter: None,
+    };
+    let (q, report) =
+        quantize(&song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
+    assert_eq!(q.meter, (6, 8), "jig must be 6/8, got {:?} at {:.2}", q.meter, report.bpm);
+}
+
+#[test]
+fn declared_meter_wins_over_detection() {
+    let mut song = synth_waltz(140.0, 8, 0.0, 9);
+    song.source_bpm = Some(140.0);
+    song.source_meter = Some((3, 4));
+    let (q, report) = quantize(&song, &QuantizeOptions::default());
+    assert_eq!(report.tempo_source, TempoSource::Declared);
+    assert_eq!(q.meter, (3, 4));
+}
+
 #[test]
 fn quantizer_never_drops_notes() {
     // Property (plan test #5): every ingested note survives quantization,
@@ -235,6 +362,7 @@ fn quantizer_never_drops_notes() {
         name: "noise".into(),
         tracks: vec![RawTrack { name: "x".into(), program: 0, is_drums: false, notes }],
         source_bpm: None,
+        source_meter: None,
     };
     let (q, _) = quantize(&song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
     assert_eq!(q.tracks[0].notes.len(), 300);

@@ -43,6 +43,8 @@ pub struct RawSong {
     /// BPM declared by the source, if it declared exactly one constant tempo
     /// (MIDI files usually do; MuScriptor streams never do).
     pub source_bpm: Option<f64>,
+    /// Time signature declared by the source (first TimeSignature meta).
+    pub source_meter: Option<(u32, u32)>,
 }
 
 impl RawSong {

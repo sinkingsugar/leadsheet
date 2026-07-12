@@ -68,14 +68,24 @@ pub fn ingest_midi(bytes: &[u8], song_name: &str) -> Result<RawSong, Error> {
         }
     };
 
-    // Pass 1: tempo map across all tracks.
+    // Pass 1: tempo map + declared time signature across all tracks.
     let mut tempo_changes = Vec::new();
+    let mut source_meter: Option<(u32, u32)> = None;
     for track in &smf.tracks {
         let mut tick = 0u64;
         for ev in track {
             tick += ev.delta.as_int() as u64;
-            if let TrackEventKind::Meta(MetaMessage::Tempo(us)) = ev.kind {
-                tempo_changes.push((tick, us.as_int()));
+            match ev.kind {
+                TrackEventKind::Meta(MetaMessage::Tempo(us)) => {
+                    tempo_changes.push((tick, us.as_int()));
+                }
+                TrackEventKind::Meta(MetaMessage::TimeSignature(num, denom_log2, _, _)) => {
+                    let denom = 1u32 << denom_log2;
+                    if source_meter.is_none() && num > 0 && (denom == 4 || denom == 8) {
+                        source_meter = Some((num as u32, denom));
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -168,6 +178,7 @@ pub fn ingest_midi(bytes: &[u8], song_name: &str) -> Result<RawSong, Error> {
         name: song_name.to_string(),
         tracks: finalize_tracks(tracks),
         source_bpm: tempo.constant_bpm(),
+        source_meter,
     })
 }
 
@@ -255,5 +266,10 @@ fn ingest_timecode(smf: &Smf, ticks_per_sec: f64, song_name: &str) -> Result<Raw
             tracks.push(RawTrack { name, program, is_drums, notes });
         }
     }
-    Ok(RawSong { name: song_name.into(), tracks: finalize_tracks(tracks), source_bpm: None })
+    Ok(RawSong {
+        name: song_name.into(),
+        tracks: finalize_tracks(tracks),
+        source_bpm: None,
+        source_meter: None,
+    })
 }

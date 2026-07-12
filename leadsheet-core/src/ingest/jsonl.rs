@@ -119,7 +119,12 @@ pub fn ingest_jsonl(text: &str, song_name: &str) -> Result<RawSong, Error> {
         })
         .collect();
 
-    Ok(RawSong { name: song_name.into(), tracks: finalize_tracks(tracks), source_bpm: None })
+    Ok(RawSong {
+        name: song_name.into(),
+        tracks: finalize_tracks(tracks),
+        source_bpm: None,
+        source_meter: None,
+    })
 }
 
 enum EventKind {

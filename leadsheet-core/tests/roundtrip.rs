@@ -155,6 +155,7 @@ fn synth_raw(bpm: f64, bars: u32, jitter_ms: f64, seed: u64, declared: bool) -> 
             mk("melody", 81, false, melody),
         ],
         source_bpm: declared.then_some(bpm),
+        source_meter: None,
     }
 }
 

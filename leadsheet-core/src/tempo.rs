@@ -22,6 +22,7 @@ use std::f64::consts::TAU;
 pub struct TempoEstimate {
     pub bpm: f64,
     pub origin: f64,
+    pub meter: (u32, u32),
     /// Winning beat-lag score over the runner-up (≥ 1.0; higher = cleaner).
     pub confidence: f64,
 }
@@ -30,7 +31,38 @@ const DT: f64 = 0.01; // autocorrelation bin, seconds
 const MIN_BPM: f64 = 60.0;
 const MAX_BPM: f64 = 200.0;
 const FALLBACK_BPM: f64 = 120.0;
-const CELLS_PER_BAR: usize = 16; // 4/4 assumed at this layer (meter detection is M5)
+
+/// A meter hypothesis: bar length in 16th cells + downbeat templates.
+struct MeterSpec {
+    meter: (u32, u32),
+    cells: usize,
+    generic: &'static [f64],
+    snare: &'static [f64],
+    /// 4/4 is the prior; others must earn their keep.
+    bias: f64,
+}
+
+/// Strong-beat templates. Generic: beat 1 > secondary beats > 8ths > 16ths.
+/// Snare: the backbeat — the one cue a wrong tempo octave or meter can't
+/// fake (see `downbeat_origin`).
+const T44_GENERIC: [f64; 16] =
+    [3.0, 0.1, 0.3, 0.1, 1.2, 0.1, 0.3, 0.1, 2.0, 0.1, 0.3, 0.1, 1.2, 0.1, 0.3, 0.1];
+const T44_SNARE: [f64; 16] =
+    [0.1, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1, 0.1, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1];
+const T34_GENERIC: [f64; 12] =
+    [3.0, 0.1, 0.3, 0.1, 1.5, 0.1, 0.3, 0.1, 1.5, 0.1, 0.3, 0.1];
+const T34_SNARE: [f64; 12] =
+    [0.1, 0.1, 0.3, 0.1, 2.5, 0.1, 0.3, 0.1, 2.5, 0.1, 0.3, 0.1];
+const T68_GENERIC: [f64; 12] =
+    [3.0, 0.1, 0.6, 0.1, 0.6, 0.1, 2.0, 0.1, 0.6, 0.1, 0.6, 0.1];
+const T68_SNARE: [f64; 12] =
+    [0.1, 0.1, 0.3, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1, 0.3, 0.1];
+
+const METERS: &[MeterSpec] = &[
+    MeterSpec { meter: (4, 4), cells: 16, generic: &T44_GENERIC, snare: &T44_SNARE, bias: 1.0 },
+    MeterSpec { meter: (3, 4), cells: 12, generic: &T34_GENERIC, snare: &T34_SNARE, bias: 0.92 },
+    MeterSpec { meter: (6, 8), cells: 12, generic: &T68_GENERIC, snare: &T68_SNARE, bias: 0.92 },
+];
 
 /// Metrical role of an onset — kick and snare get their own downbeat
 /// templates (kick ≈ downbeat prior, snare ≈ backbeat prior).
@@ -85,7 +117,7 @@ fn events(song: &RawSong) -> Vec<Ev> {
 pub fn estimate(song: &RawSong) -> TempoEstimate {
     let evs = events(song);
     if evs.len() < 8 {
-        return TempoEstimate { bpm: FALLBACK_BPM, origin: 0.0, confidence: 1.0 };
+        return TempoEstimate { bpm: FALLBACK_BPM, origin: 0.0, meter: (4, 4), confidence: 1.0 };
     }
     let (bpm0, confidence) = beat_period(&evs);
     let mut candidates = vec![bpm0];
@@ -97,31 +129,47 @@ pub fn estimate(song: &RawSong) -> TempoEstimate {
     }
 
     let total_w: f64 = evs.iter().map(|e| e.w).sum();
-    let mut best: Option<(f64, f64, f64)> = None; // (score, bpm, origin)
+    let mut best: Option<(f64, f64, f64, (u32, u32))> = None; // (score, bpm, origin, meter)
     for c in candidates {
         let (bpm, phase, mag) = refine(&evs, c, 0.03);
         let coherence = mag / total_w; // 1.0 = every onset exactly on this grid
-        let (origin, fit) = downbeat_origin(&evs, bpm, phase);
         let prior = (-(bpm / 100.0).ln().powi(2) / (2.0 * 0.45f64.powi(2))).exp();
-        let score = coherence * (fit / total_w) * (0.6 + 0.4 * prior);
-        if best.is_none_or(|(s, _, _)| score > s) {
-            best = Some((score, bpm, origin));
+        for spec in METERS {
+            let (origin, fit) = downbeat_origin(&evs, bpm, phase, spec);
+            // Normalize by the template's per-cell mass so meters with
+            // different bar lengths score comparably.
+            let template_mean = spec.generic.iter().sum::<f64>() / spec.cells as f64;
+            let score =
+                coherence * (fit / (total_w * template_mean)) * (0.6 + 0.4 * prior) * spec.bias;
+            if best.is_none_or(|(s, _, _, _)| score > s) {
+                best = Some((score, bpm, origin, spec.meter));
+            }
         }
     }
-    let (_, bpm, origin) = best.unwrap();
-    TempoEstimate { bpm, origin, confidence }
+    let (_, bpm, origin, meter) = best.unwrap();
+    TempoEstimate { bpm, origin, meter, confidence }
 }
 
 /// Grid alignment when the BPM is already known (e.g. user override on a
 /// MuScriptor stream): only phase + downbeat are estimated.
-pub fn align_known_bpm(song: &RawSong, bpm: f64) -> f64 {
+pub fn align_known_bpm(song: &RawSong, bpm: f64) -> (f64, (u32, u32)) {
     let evs = events(song);
     if evs.is_empty() {
-        return 0.0;
+        return (0.0, (4, 4));
     }
     // Tiny search window: absorb rounding, keep the caller's tempo.
     let (_, phase, _) = refine(&evs, bpm, 0.0005);
-    downbeat_origin(&evs, bpm, phase).0
+    let mut best: Option<(f64, f64, (u32, u32))> = None;
+    for spec in METERS {
+        let (origin, fit) = downbeat_origin(&evs, bpm, phase, spec);
+        let template_mean = spec.generic.iter().sum::<f64>() / spec.cells as f64;
+        let score = fit / template_mean * spec.bias;
+        if best.is_none_or(|(s, _, _)| score > s) {
+            best = Some((score, origin, spec.meter));
+        }
+    }
+    let (_, origin, meter) = best.unwrap();
+    (origin, meter)
 }
 
 /// Autocorrelation of the smoothed onset train → beat period candidate.
@@ -239,34 +287,24 @@ fn refine(evs: &[Ev], bpm0: f64, rel_window: f64) -> (f64, f64, f64) {
     (best.1, best.2, best.0)
 }
 
-/// Strong-beat templates over one 4/4 bar of 16th cells.
-/// Generic: beat 1 > beat 3 > beats 2/4 > 8ths > 16ths.
-const T_GENERIC: [f64; CELLS_PER_BAR] = [
-    3.0, 0.1, 0.3, 0.1, 1.2, 0.1, 0.3, 0.1, 2.0, 0.1, 0.3, 0.1, 1.2, 0.1, 0.3, 0.1,
-];
-/// Snare: the backbeat lives on beats 2 and 4; snare on 1/3 argues *against*
-/// this downbeat/tempo reading. This is what disambiguates tempo octaves.
-const T_SNARE: [f64; CELLS_PER_BAR] = [
-    0.1, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1, 0.1, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1,
-];
-
-/// Pick which grid cell is the downbeat. Returns (origin of bar 0, fit score
-/// of the winning offset — comparable across tempo hypotheses on the same
-/// onsets).
-fn downbeat_origin(evs: &[Ev], bpm: f64, phase: f64) -> (f64, f64) {
+/// Pick which grid cell is the downbeat under a meter hypothesis. Returns
+/// (origin of bar 0, fit score of the winning offset — comparable across
+/// tempo hypotheses on the same onsets after per-cell normalization).
+fn downbeat_origin(evs: &[Ev], bpm: f64, phase: f64, spec: &MeterSpec) -> (f64, f64) {
     let cell = 15.0 / bpm;
-    let mut score = [0.0f64; CELLS_PER_BAR];
+    let cells = spec.cells;
+    let mut score = vec![0.0f64; cells];
     let mut min_cell = i64::MAX;
     for e in evs {
         let idx = ((e.t - phase) / cell).round() as i64;
         min_cell = min_cell.min(idx);
         // Snare evidence is boosted here (beyond its autocorrelation weight):
-        // a wrong tempo octave folds *every* onset class onto nominally
-        // stronger template slots — the backbeat is the one cue that a wrong
-        // octave can't fake, so it must dominate the octave vote.
+        // a wrong tempo octave or meter folds *every* onset class onto
+        // nominally stronger template slots — the backbeat is the one cue
+        // that can't be faked, so it must dominate the vote.
         let (template, class_boost) = match e.class {
-            EvClass::Snare => (&T_SNARE, 3.0),
-            _ => (&T_GENERIC, 1.0),
+            EvClass::Snare => (spec.snare, 3.0),
+            _ => (spec.generic, 1.0),
         };
         // Long notes mark harmonic anchors (chord changes sit on bar lines).
         // Absolute threshold, NOT cells of the hypothesis: a tempo-relative
@@ -274,7 +312,7 @@ fn downbeat_origin(evs: &[Ev], bpm: f64, phase: f64) -> (f64, f64) {
         // and bias the octave vote toward faster tempi.
         let w = e.w * class_boost * if e.dur >= 0.6 { 2.5 } else { 1.0 };
         for (o, sv) in score.iter_mut().enumerate() {
-            *sv += w * template[(idx - o as i64).rem_euclid(CELLS_PER_BAR as i64) as usize];
+            *sv += w * template[(idx - o as i64).rem_euclid(cells as i64) as usize];
         }
     }
     let (best_o, best_fit) = score
@@ -285,6 +323,6 @@ fn downbeat_origin(evs: &[Ev], bpm: f64, phase: f64) -> (f64, f64) {
         .unwrap_or((0, 0.0));
     // Shift by whole bars so the earliest onset lands inside bar 0.
     let rel = min_cell - best_o;
-    let bar_shift = rel.div_euclid(CELLS_PER_BAR as i64);
-    (phase + (best_o + bar_shift * CELLS_PER_BAR as i64) as f64 * cell, best_fit)
+    let bar_shift = rel.div_euclid(cells as i64);
+    (phase + (best_o + bar_shift * cells as i64) as f64 * cell, best_fit)
 }

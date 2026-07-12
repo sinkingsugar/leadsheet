@@ -30,8 +30,8 @@ pub struct QTrack {
 pub struct QSong {
     pub name: String,
     pub bpm: f64,
-    /// (numerator, denominator). Only 4/4 is produced for now (meter
-    /// detection is M5); cells-per-bar math already honors the field.
+    /// (numerator, denominator): declared by the source when available,
+    /// else detected (4/4, 3/4, 6/8 templates).
     pub meter: (u32, u32),
     /// Estimated key (header + spelling); `None` = unknown, spell sharps.
     pub key: Option<crate::key::Key>,
@@ -104,33 +104,43 @@ pub struct QuantizeReport {
 }
 
 pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeReport) {
-    let (bpm, origin, tempo_source) = match (opts.bpm_override, opts.infer_tempo, song.source_bpm)
-    {
-        (Some(bpm), _, _) => (bpm, tempo::align_known_bpm(song, bpm), TempoSource::Override),
-        (None, false, Some(declared)) => {
-            let declared_mean = mean_residual_ms(song, declared, 0.0);
-            let mut choice = (declared, 0.0, TempoSource::Declared);
-            if !opts.no_infer && declared_mean > AUTO_INFER_TRIGGER_MS {
-                let est = tempo::estimate(song);
-                let inferred_mean = mean_residual_ms(song, est.bpm, est.origin);
-                if inferred_mean < AUTO_INFER_RATIO * declared_mean {
-                    choice = (
-                        est.bpm,
-                        est.origin,
-                        TempoSource::AutoInferred {
-                            declared_bpm: declared,
-                            declared_mean_ms: declared_mean,
-                        },
-                    );
-                }
+    let declared_meter = song.source_meter.unwrap_or((4, 4));
+    let (bpm, origin, meter, tempo_source) =
+        match (opts.bpm_override, opts.infer_tempo, song.source_bpm) {
+            (Some(bpm), _, _) => {
+                let (origin, meter) = tempo::align_known_bpm(song, bpm);
+                let meter = song.source_meter.unwrap_or(meter);
+                (bpm, origin, meter, TempoSource::Override)
             }
-            choice
-        }
-        _ => {
-            let est = tempo::estimate(song);
-            (est.bpm, est.origin, TempoSource::Inferred)
-        }
-    };
+            (None, false, Some(declared)) => {
+                let declared_mean = mean_residual_ms(song, declared, 0.0);
+                let mut choice = (declared, 0.0, declared_meter, TempoSource::Declared);
+                if !opts.no_infer && declared_mean > AUTO_INFER_TRIGGER_MS {
+                    let est = tempo::estimate(song);
+                    let inferred_mean = mean_residual_ms(song, est.bpm, est.origin);
+                    if inferred_mean < AUTO_INFER_RATIO * declared_mean {
+                        // The declared meter stays authoritative if present:
+                        // a lying tempo doesn't make the meter a lie too.
+                        let meter = song.source_meter.unwrap_or(est.meter);
+                        choice = (
+                            est.bpm,
+                            est.origin,
+                            meter,
+                            TempoSource::AutoInferred {
+                                declared_bpm: declared,
+                                declared_mean_ms: declared_mean,
+                            },
+                        );
+                    }
+                }
+                choice
+            }
+            _ => {
+                let est = tempo::estimate(song);
+                let meter = song.source_meter.unwrap_or(est.meter);
+                (est.bpm, est.origin, meter, TempoSource::Inferred)
+            }
+        };
 
     let cell_sec = 60.0 / (bpm * CELLS_PER_BEAT as f64);
     let snap = |t: f64| ((t - origin) / cell_sec).round() as i64;
@@ -171,7 +181,7 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
     let mut qsong = QSong {
         name: song.name.clone(),
         bpm,
-        meter: (4, 4),
+        meter,
         key: None,
         n_bars: 0,
         tracks,

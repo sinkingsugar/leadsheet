@@ -291,7 +291,10 @@ pub fn emit(q: &QSong) -> String {
                     }
                     Some(if t.is_drums {
                         Body::Drums(drum_lane_map(segs, cpb))
-                    } else if let Some(c) = try_chordal(segs, cpb, flats) {
+                    } else if let Some(c) =
+                        // Chord columns are quarter-note beats; only /4 meters.
+                        (q.meter.1 == 4).then(|| try_chordal(segs, cpb, flats)).flatten()
+                    {
                         Body::Chordal(c)
                     } else {
                         Body::Melodic(bar_voices(segs, cpb, flats).join(" & "))

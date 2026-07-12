@@ -35,7 +35,10 @@ arrangement:
 ## Time
 
 Everything is measured in **grid cells** = 16th notes. A 4/4 bar has 16
-cells; a beat is 4 cells. Patterns are exactly one bar long.
+cells (3/4 → 12, 6/8 → 12); a beat is 4 cells. The compressor emits
+one-bar patterns; hand-written patterns may span several bars:
+`P2 piano* | Am . . . | F . C . |` (chord holds don't cross the internal
+bar lines — restate the chord).
 
 ## Pattern bodies — three kinds
 
@@ -79,19 +82,35 @@ P2 drums
   bongos, `cg1 cg2 cg3` congas, `dNN` = any other GM key NN.
 - Drum hits are one-shots; durations are not represented.
 
+## Variants
+
+A pattern can declare itself a variant of an earlier one with `~P<n>`:
+
+```
+P8 drums ~P3
+  h |x.x. x.x. ..x. x...|
+```
+
+For **drums** this is real inheritance: only the lanes that differ from
+the base are listed (an all-dots lane silences an inherited one). For
+melodic/chordal patterns `~P7` is informational kinship — the body is
+still complete.
+
 ## Arrangement
 
 ```
 arrangement:
   intro: [P1+P2] x2
-  [P1+P2+P3] x8
+  A: [P1+P2+P3] x8
   [z] x4
 ```
 
-Each row is one bar-stack: the listed patterns play together for one bar,
-repeated `xN` times (`x1` implied). `[z]` = a silent bar. Rows may carry a
-label (`intro:`) — currently informational only. Bars run consecutively
-row by row.
+Each row is one bar-stack: the listed patterns play together, repeated
+`xN` times (`x1` implied). With multi-bar patterns in the stack, the row
+unit is the longest pattern; 1-bar patterns repeat each bar of the unit.
+`[z]` = a silent bar. Labels (`intro:`, `A:`) are emitted from
+self-similarity analysis (reprises reuse their letter) and ignored by the
+parser — purely for reading. Bars run consecutively row by row.
 
 ## Direct bars (hand-authoring shortcut)
 
@@ -108,5 +127,9 @@ leadsheet roundtrip in.mid               # F1 + compression report
 leadsheet inspect   in.mid               # what would the compressor see
 ```
 
-`--infer-tempo` estimates tempo from onsets even when the file declares
-one (transcribed MIDI carries an invented tempo); `--bpm N` forces it.
+Tempo handling: a declared tempo whose grid fits the onsets poorly
+(live takes recorded against a default click) is auto-replaced by the
+inferred one, with a notice. `--no-infer-tempo` trusts the declaration,
+`--infer-tempo` forces inference, `--bpm N` forces a value. Meter is
+taken from the file's time signature when present, else detected
+(4/4, 3/4, 6/8).
