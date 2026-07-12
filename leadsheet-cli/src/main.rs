@@ -78,6 +78,22 @@ enum Cmd {
         #[command(flatten)]
         tempo: TempoArgs,
     },
+    /// Parse and validate leadsheet text; print diagnostics. Exit 0 only
+    /// when the file is valid.
+    Check {
+        input: PathBuf,
+        /// Machine-readable output (one JSON object).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rewrite leadsheet text in canonical form (parse + canonical emit —
+    /// never reinterprets a note).
+    Fmt {
+        input: PathBuf,
+        /// Output path (default: rewrite in place; `-` for stdout).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -202,6 +218,71 @@ fn main() -> Result<()> {
                 "µtiming discarded by 1/16 snap: mean {:.1} ms, max {:.1} ms",
                 report.mean_abs_residual_ms, report.max_abs_residual_ms
             );
+        }
+        Cmd::Check { input, json } => {
+            let read = std::fs::read_to_string(&input);
+            let outcome = read
+                .map_err(anyhow::Error::from)
+                .and_then(|text| leadsheet_core::parse::parse(&text).map_err(anyhow::Error::from));
+            match outcome {
+                Ok(q) => {
+                    let notes: usize = q.tracks.iter().map(|t| t.notes.len()).sum();
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "ok": true,
+                                "bars": q.n_bars,
+                                "tracks": q.tracks.len(),
+                                "notes": notes,
+                            })
+                        );
+                    } else {
+                        println!(
+                            "ok: {} bars, {} tracks, {notes} notes ({:.2} BPM, {}/{})",
+                            q.n_bars,
+                            q.tracks.len(),
+                            q.bpm,
+                            q.meter.0,
+                            q.meter.1
+                        );
+                    }
+                }
+                Err(e) => {
+                    if json {
+                        let payload = match e
+                            .downcast_ref::<leadsheet_core::Error>()
+                            .and_then(|e| e.diagnostic())
+                        {
+                            Some(d) => serde_json::json!({ "ok": false, "diagnostics": [d] }),
+                            None => serde_json::json!({ "ok": false, "error": e.to_string() }),
+                        };
+                        println!("{payload}");
+                    } else {
+                        eprintln!("{e}");
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
+        Cmd::Fmt { input, output } => {
+            let text = std::fs::read_to_string(&input)?;
+            let qsong = leadsheet_core::parse::parse(&text)?;
+            let canonical = leadsheet_core::emit::emit(&qsong);
+            let out_path = output.unwrap_or_else(|| input.clone());
+            if out_path.as_os_str() == "-" {
+                print!("{canonical}");
+            } else {
+                let unchanged = canonical == text;
+                std::fs::write(&out_path, &canonical)?;
+                eprintln!(
+                    "{} {} ({} bars{})",
+                    if unchanged { "unchanged" } else { "formatted" },
+                    out_path.display(),
+                    qsong.n_bars,
+                    if unchanged { "" } else { ", canonical form" },
+                );
+            }
         }
     }
     Ok(())

@@ -238,6 +238,7 @@ dependencies = [
  "anyhow",
  "clap",
  "leadsheet-core",
+ "serde_json",
 ]
 
 [[package]]
