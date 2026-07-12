@@ -32,10 +32,13 @@ pub const DEFAULT_BASS_OCTAVE: i8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChordSym {
+    /// Pitch class 0..12 (C = 0). `Document::validate` rejects anything
+    /// else: a noncanonical value (13 ≡ 1) would normalize through
+    /// emission and reparse as a *different* Document.
     pub root_pc: u8,
-    /// Index into [`QUALITIES`].
+    /// Index into [`QUALITIES`]; `Document::validate` rejects overshoot.
     pub quality: usize,
-    /// Lowest sounding pitch class; ≠ root_pc means a slash chord.
+    /// Lowest sounding pitch class 0..12; ≠ root_pc means a slash chord.
     pub bass_pc: u8,
     /// Octave of the bass note (scientific, C4 = middle C).
     pub bass_octave: i8,
@@ -45,7 +48,9 @@ pub struct ChordSym {
 /// order, each at the closest position above the previous note.
 pub fn voicing(sym: &ChordSym) -> Option<Vec<u8>> {
     let ints = QUALITIES.get(sym.quality)?.1;
-    let pcs: Vec<u8> = ints.iter().map(|i| (sym.root_pc + i) % 12).collect();
+    // Widened before the add: this is validation's own callee, so it
+    // must be total even on a hostile root_pc (255 + 11 overflows u8).
+    let pcs: Vec<u8> = ints.iter().map(|i| ((sym.root_pc as u16 + *i as u16) % 12) as u8).collect();
     let start = pcs.iter().position(|&p| p == sym.bass_pc % 12)?;
     let base = (sym.bass_octave as i32 + 1) * 12 + (sym.bass_pc % 12) as i32;
     if !(0..=127).contains(&base) {
@@ -214,6 +219,22 @@ mod tests {
         // Same pcs from C = C6.
         let sym = detect(&[60, 64, 67, 69]).unwrap();
         assert_eq!(symbol_to_string(&sym, false), "C6(4)");
+    }
+
+    #[test]
+    fn voicing_is_total_on_hostile_discriminants() {
+        // Document::validate rejects these representations; the helper
+        // itself must be total anyway — it is validation's own callee.
+        let sym = |root_pc, quality, bass_pc, bass_octave| ChordSym {
+            root_pc,
+            quality,
+            bass_pc,
+            bass_octave,
+        };
+        let _ = voicing(&sym(255, 0, 255, 3)); // u8 overflow, once
+        assert!(voicing(&sym(0, usize::MAX, 0, 3)).is_none(), "quality overshoot");
+        assert!(voicing(&sym(0, 0, 0, 120)).is_none(), "bass above MIDI range");
+        assert!(voicing(&sym(0, 0, 0, -3)).is_none(), "bass below MIDI range");
     }
 
     #[test]

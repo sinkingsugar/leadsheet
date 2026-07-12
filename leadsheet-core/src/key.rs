@@ -4,6 +4,9 @@ use crate::grid::QSong;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Key {
+    /// Pitch class 0..12 (C = 0). `validate()` rejects anything else on
+    /// both layers; the helpers below are total (mod 12) regardless, so
+    /// a hostile value can never panic past the boundary.
     pub tonic_pc: u8,
     pub minor: bool,
 }
@@ -16,13 +19,14 @@ impl Key {
     /// relative minors. The six-accidental toss-up goes by convention:
     /// F# major (not Gb), but Eb minor (not D#m).
     pub fn use_flats(&self) -> bool {
-        let rel_major = if self.minor { (self.tonic_pc + 3) % 12 } else { self.tonic_pc };
+        let pc = self.tonic_pc % 12;
+        let rel_major = if self.minor { (pc + 3) % 12 } else { pc };
         matches!(rel_major, 5 | 10 | 3 | 8 | 1) || (rel_major == 6 && self.minor)
     }
 
     pub fn name(&self) -> String {
         let names = if self.use_flats() { &FLAT_PC } else { &SHARP_PC };
-        format!("{}{}", names[self.tonic_pc as usize], if self.minor { "m" } else { "" })
+        format!("{}{}", names[(self.tonic_pc % 12) as usize], if self.minor { "m" } else { "" })
     }
 
     pub fn parse(s: &str) -> Option<Key> {
@@ -101,6 +105,19 @@ mod tests {
         }
         assert_eq!(Key::parse("A#").unwrap().name(), "Bb", "enharmonic normalizes");
         assert!(Key::parse("H").is_none());
+    }
+
+    #[test]
+    fn helpers_are_total_on_hostile_pcs() {
+        // validate() is the boundary that rejects these; the spelling
+        // helpers must still never panic on a host-built value.
+        for pc in [12u8, 13, 200, 255] {
+            for minor in [false, true] {
+                let k = Key { tonic_pc: pc, minor };
+                let _ = k.use_flats();
+                assert_eq!(k.name(), Key { tonic_pc: pc % 12, minor }.name());
+            }
+        }
     }
 
     #[test]

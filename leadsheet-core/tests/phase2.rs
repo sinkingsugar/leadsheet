@@ -277,6 +277,52 @@ fn validate_closes_the_triage_2_holes() {
     assert!(bad.validate().is_err(), "MIDI pitch range");
 }
 
+/// Triage-3 A-family: public fields encoding constrained domains (key
+/// pitch class, chord discriminants) are checked at the validate
+/// boundary. Out-of-range values used to panic in emission (A1) or in
+/// validation's own callee, and noncanonical ones (13 ≡ 1) validated,
+/// normalized through emission, and reparsed as a *different* Document.
+#[test]
+fn validate_closes_the_triage_3_holes() {
+    use leadsheet_core::chord::{ChordSym, QUALITIES};
+    use leadsheet_core::doc::ChordCol;
+    use leadsheet_core::key::Key;
+    let good = doc(AUTHOR);
+
+    // A1: hostile key pcs fail both layers; resolve errs, never panics.
+    for pc in [12u8, 255] {
+        let mut d = good.clone();
+        d.header.key = Some(Key { tonic_pc: pc, minor: pc.is_multiple_of(2) });
+        assert!(d.validate().is_err(), "key pc {pc}");
+        assert!(d.resolve().is_err(), "key pc {pc}");
+        let mut q = good.resolve().unwrap();
+        q.key = Some(Key { tonic_pc: pc, minor: false });
+        assert!(q.validate().is_err(), "QSong key pc {pc}");
+    }
+
+    // A2: chord discriminants (P7 is chordal; poke its first symbol).
+    let mutate_sym = |f: &dyn Fn(&mut ChordSym)| {
+        let mut d = good.clone();
+        let PatternBody::Chordal(bars) = &mut d.patterns[0].body else { unreachable!() };
+        let sym = bars
+            .iter_mut()
+            .flatten()
+            .find_map(|c| match c {
+                ChordCol::Sym(s) => Some(s),
+                _ => None,
+            })
+            .unwrap();
+        f(sym);
+        d
+    };
+    // 255 used to overflow u8 arithmetic *inside* validate's own callee.
+    assert!(mutate_sym(&|s| s.root_pc = 255).validate().is_err());
+    // 13 used to pass validate and mutate through the text loop.
+    assert!(mutate_sym(&|s| s.root_pc = 13).validate().is_err());
+    assert!(mutate_sym(&|s| s.bass_pc = 12).validate().is_err());
+    assert!(mutate_sym(&|s| s.quality = QUALITIES.len()).validate().is_err());
+}
+
 /// The flip side of the label rules: odd-but-harmless labels (']' or ':'
 /// before the '[' never confuse the row parser) stay legal and survive
 /// the canonical loop.
