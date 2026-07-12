@@ -9,8 +9,13 @@
 //! inserting an item at the top reports the whole tail as changed. That
 //! is a known, accepted limit of the lean diff; don't build
 //! edit-distance intuitions on it.
+//!
+//! Patterns and directs reference instruments by *index*, so their
+//! semantic track identity is the referenced instrument's name, never
+//! the bare index (A3): reordering the declaration with untouched
+//! indices rebinds every reference and must not diff empty.
 
-use crate::doc::{Document, DrumsBody, PatternBody, PatternDef, Row, TimelineItem};
+use crate::doc::{Document, DrumsBody, Instrument, PatternBody, PatternDef, Row, TimelineItem};
 use crate::emit::{lane_char, spell_chordal_bar, spell_melodic_bar};
 use crate::{drums, notation};
 use std::fmt::Write;
@@ -72,6 +77,19 @@ pub fn diff(a: &Document, b: &Document) -> String {
             let _ = writeln!(out, "instrument {} added ({})", ib.name, field(ib));
         }
     }
+    // Declaration order is source structure and reference semantics: a
+    // reorder with untouched indices rebinds every pattern and direct.
+    let na: Vec<&str> = a.instruments.iter().map(|i| i.name.as_str()).collect();
+    let nb: Vec<&str> = b.instruments.iter().map(|i| i.name.as_str()).collect();
+    if na != nb {
+        let (mut sa, mut sb) = (na.clone(), nb.clone());
+        sa.sort_unstable();
+        sb.sort_unstable();
+        // A pure reorder; adds/removes already read above.
+        if sa == sb {
+            let _ = writeln!(out, "instrument order: {} -> {}", na.join(","), nb.join(","));
+        }
+    }
 
     // Patterns, by id.
     for pa in &a.patterns {
@@ -79,7 +97,7 @@ pub fn diff(a: &Document, b: &Document) -> String {
             None => {
                 let _ = writeln!(out, "P{} removed", pa.id);
             }
-            Some(pb) => diff_pattern(&mut out, pa, pb, flats),
+            Some(pb) => diff_pattern(&mut out, pa, pb, flats, &a.instruments, &b.instruments),
         }
     }
     for pb in &b.patterns {
@@ -101,7 +119,16 @@ pub fn diff(a: &Document, b: &Document) -> String {
                 }
             }
             (Some(TimelineItem::Direct(x)), Some(TimelineItem::Direct(y))) => {
-                if x != y {
+                // Not derived PartialEq: it compares `track` as a bare
+                // index, which both misses a rebind (A3) and would
+                // over-report an index shuffle that references the same
+                // instrument.
+                let (ta, tb) =
+                    (inst_name(&a.instruments, x.track), inst_name(&b.instruments, y.track));
+                if ta != tb {
+                    let _ = writeln!(out, "direct b{}: instrument {ta} -> {tb}", x.bar);
+                }
+                if x.bar != y.bar || x.base_vel != y.base_vel || x.body != y.body {
                     if x.bar == y.bar {
                         let _ = writeln!(out, "direct b{} changed", x.bar);
                     } else {
@@ -135,6 +162,12 @@ fn item_text(i: &TimelineItem) -> String {
     }
 }
 
+/// The semantic identity behind a track index. Diff never validates, so
+/// stay total on out-of-range indices.
+fn inst_name(insts: &[Instrument], i: usize) -> &str {
+    insts.get(i).map(|x| x.name.as_str()).unwrap_or("?")
+}
+
 fn field(i: &crate::doc::Instrument) -> String {
     if i.is_drums { "kit".into() } else { format!("program {}", i.program) }
 }
@@ -157,9 +190,18 @@ fn row_text(r: &Row) -> String {
     if r.reps == 1 { format!("{label}[{stack}]") } else { format!("{label}[{stack}] x{}", r.reps) }
 }
 
-fn diff_pattern(out: &mut String, pa: &PatternDef, pb: &PatternDef, flats: bool) {
-    if pa.track != pb.track {
-        let _ = writeln!(out, "P{}: instrument changed", pa.id);
+fn diff_pattern(
+    out: &mut String,
+    pa: &PatternDef,
+    pb: &PatternDef,
+    flats: bool,
+    ia: &[Instrument],
+    ib: &[Instrument],
+) {
+    // Referenced identity, not the bare index (A3).
+    let (ta, tb) = (inst_name(ia, pa.track), inst_name(ib, pb.track));
+    if ta != tb {
+        let _ = writeln!(out, "P{}: instrument {ta} -> {tb}", pa.id);
     }
     if pa.kin != pb.kin {
         let show = |k: Option<usize>| k.map(|k| format!("~P{k}")).unwrap_or_else(|| "-".into());

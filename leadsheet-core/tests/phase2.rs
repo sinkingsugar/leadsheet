@@ -342,6 +342,38 @@ arrangement:
     assert_eq!(doc(&emitted), d, "label survives the loop:\n{emitted}");
 }
 
+/// Triage-3 A3, third member of the empty-diff regression family (E6
+/// timeline order, r2 A1): patterns and directs reference instruments
+/// by index, so swapping the declaration vector with untouched indices
+/// rebinds every reference — the two Documents compile to different
+/// music and the diff must say so, by referenced identity.
+#[test]
+fn semantic_diff_sees_instrument_reordering() {
+    let text = "\
+# song: a3  tempo: 100.00  meter: 4/4  grid: 1/16
+# instruments: piano:0 bass:33
+P1 piano | C16 |
+b1 bass | D,16 |
+arrangement:
+  [P1]
+";
+    let da = doc(text);
+    let mut db = da.clone();
+    db.instruments.swap(0, 1);
+    db.validate().expect("a reordered declaration is still valid");
+
+    // The rebind is real: same notes land on different instruments.
+    let sig = |q: &leadsheet_core::grid::QSong| {
+        q.tracks.iter().map(|t| (t.name.clone(), t.program, t.notes.clone())).collect::<Vec<_>>()
+    };
+    assert_ne!(sig(&da.resolve().unwrap()), sig(&db.resolve().unwrap()));
+
+    let r = diff::diff(&da, &db);
+    assert!(r.contains("instrument order: piano,bass -> bass,piano"), "{r}");
+    assert!(r.contains("P1: instrument piano -> bass"), "{r}");
+    assert!(r.contains("direct b1: instrument bass -> piano"), "{r}");
+}
+
 /// A1: the diff contract is "empty = semantically identical", and
 /// timeline *order* is semantic (the E6 joined/split pair compiles to
 /// different QSongs). Reordering rows and directs must never diff empty.
