@@ -81,13 +81,18 @@ fn check_json_ok_shape() {
 }
 
 #[test]
-fn fmt_canonicalizes_and_is_idempotent() {
-    // Scruffy but valid: extra whitespace, direct bars out of order.
+fn fmt_is_document_canonical_and_idempotent() {
+    // Scruffy but valid: extra whitespace, author structure (custom
+    // pattern id, direct bars out of order, label). Document-canonical
+    // fmt normalizes spelling/layout but PRESERVES the structure.
     let scruffy = "\
 # song: f  tempo:   90.00   meter: 4/4  grid: 1/16
 # instruments: p:0
-b2 p |   G4 E4   C8   |
+P7 p |   G4 E4   C8   |
+b2 p |   E4 G4   C8   |
 b1 p | C8 E4 G4 |
+arrangement:
+  verse: [P7] x2
 ";
     let f = Tmp::new("scruffy.ls", scruffy.as_bytes());
     let out = bin().args(["fmt"]).arg(&f.0).output().unwrap();
@@ -95,7 +100,12 @@ b1 p | C8 E4 G4 |
     assert!(out.status.success(), "{out:?}");
     let once = std::fs::read_to_string(&f.0).unwrap();
     assert_ne!(once, scruffy, "fmt must canonicalize");
-    assert!(once.contains("arrangement:"), "{once}");
+    assert!(once.contains("P7 p | G4 E4 C8 |"), "author id + spacing normalized:\n{once}");
+    assert!(once.contains("b2 p | E4 G4 C8 |"), "direct bars survive:\n{once}");
+    assert!(once.contains("verse: [P7] x2"), "labels survive:\n{once}");
+    let b1 = once.find("b1 p").unwrap();
+    let b2 = once.find("b2 p").unwrap();
+    assert!(b2 < b1, "timeline order preserved as written:\n{once}");
 
     // Second run: byte-identical, reported as unchanged.
     let out = bin().args(["fmt"]).arg(&f.0).output().unwrap();
