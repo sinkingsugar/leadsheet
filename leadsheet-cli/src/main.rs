@@ -11,14 +11,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Ingest a .mid or MuScriptor .jsonl and print what was understood.
-    Inspect { input: PathBuf },
+    /// Ingest a .mid or MuScriptor .jsonl and print what was understood,
+    /// including the tempo/grid the compressor would use.
+    Inspect {
+        input: PathBuf,
+        /// Infer tempo from onsets even if the file declares one.
+        #[arg(long)]
+        infer_tempo: bool,
+        /// Force this BPM (phase/downbeat still estimated).
+        #[arg(long)]
+        bpm: Option<f64>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Inspect { input } => {
+        Cmd::Inspect { input, infer_tempo, bpm } => {
             let song = leadsheet_core::ingest::ingest_path(&input)?;
             println!("song: {}", song.name);
             match song.source_bpm {
@@ -42,6 +51,21 @@ fn main() -> Result<()> {
                     }
                 );
             }
+            let opts = leadsheet_core::grid::QuantizeOptions { bpm_override: bpm, infer_tempo };
+            let (qsong, report) = leadsheet_core::grid::quantize(&song, &opts);
+            println!(
+                "grid: {:.2} BPM ({:?}), origin {:+.3} s, {} bars of {}/{}",
+                report.bpm,
+                report.tempo_source,
+                report.origin,
+                qsong.n_bars,
+                qsong.meter.0,
+                qsong.meter.1,
+            );
+            println!(
+                "µtiming discarded by 1/16 snap: mean {:.1} ms, max {:.1} ms",
+                report.mean_abs_residual_ms, report.max_abs_residual_ms
+            );
         }
     }
     Ok(())

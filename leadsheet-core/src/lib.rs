@@ -6,7 +6,9 @@
 
 pub mod error;
 pub mod gm;
+pub mod grid;
 pub mod ingest;
 pub mod model;
+pub mod tempo;
 
 pub use error::Error;
