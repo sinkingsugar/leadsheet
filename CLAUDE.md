@@ -17,18 +17,29 @@ authoring-expression layer: dynamics, drum stroke subdivision, swing.
 Battle-tested on a real 3.5k-note MuScriptor transcription (roundtrip
 F1 0.9997) and on pieces composed directly as text.
 
+PLAN.md Phase 1 (bulletproofing) landed: proptest invariant properties,
+fuzz + hardened parser (panic-free, bounded, structured diagnostics),
+golden corpus in `corpus/`, and the `check`/`fmt` agent loop. The
+property suite caught three canonicality bugs; the fix sits on the
+`fix/canonicality` branch awaiting Gio's review (the three properties
+are `#[ignore]`d on main until it merges).
+
 ## Map
 
 | Where | What |
 |---|---|
 | `FORMAT.md` | **The format spec.** Paste it alongside a `.ls` when prompting an LLM. |
+| `PLAN.md` | Scope charter + phased roadmap (Phase 1 done, 3a next). |
+| `corpus/` | Golden fixtures: compress output is byte-locked by `tests/corpus.rs`. |
 | `leadsheet-core/` | Library. `ingest` (.mid + MuScriptor jsonl) → `tempo`/`grid` (beat inference, quantization) → `chord`/`key`/`drums`/`notation` (semantics) → `pattern`/`emit` (text out) and `parse`/`render` (text in → MIDI). `metrics` is the oracle. |
-| `leadsheet-cli/` | `leadsheet compress | render | roundtrip | inspect` |
+| `leadsheet-cli/` | `leadsheet compress | render | roundtrip | inspect | check | fmt` |
 
 ```
 leadsheet compress  in.mid  -o out.ls    # or MuScriptor .jsonl (streamable)
 leadsheet render    out.ls  -o back.mid
 leadsheet roundtrip in.mid               # F1 + ratio; exits nonzero < 0.95
+leadsheet check     out.ls --json        # validate; structured diagnostics
+leadsheet fmt       out.ls               # canonical form, in place
 fluidsynth -ni -F out.wav -r 44100 <soundfont.sf2> back.mid
 ```
 
@@ -64,9 +75,15 @@ from the MuScriptor HF cache.
 
 ## Next / deferred
 
+- **Merge decision pending:** `fix/canonicality` — three
+  property-suite-found bugs in parse tie tracking and emit `@dyn` base
+  derivation (details in the branch commit and
+  `leadsheet-core/tests/props.rs`). Verified: 4000 proptest cases per
+  property, corpus byte-identical, Matrix.mid output byte-identical.
+  After merging, the three `#[ignore]`s in props.rs come off.
 - Melodic 32nds (`/` duration fractions): needs the internal clock moved
-  from 16th-cells to 32nd-units first. Drum subdivision shipped without it
-  (drum `dur_cells` is a stroke count).
+  to the 960-ticks-per-beat base first (PLAN.md Phase 3a). Drum
+  subdivision shipped without it (drum `dur_cells` is a stroke count).
 - Per-track swing override (drums shuffle, pads straight) — floated,
   undecided.
 - Analysis-grade chord view (roman numerals over real comping), BPE motif

@@ -42,7 +42,14 @@ through Gio.
 
 Make the invariants machine-enforced before anything moves.
 
-- [ ] **Property tests** (`proptest` dev-dep in leadsheet-core):
+**Status: landed 2026-07-12** (tests/props.rs, tests/robustness.rs,
+tests/diagnostics.rs, tests/corpus.rs + corpus/, CLI check/fmt). The
+property suite immediately caught three canonicality bugs in parse tie
+tracking and emit dynamic-base derivation; the fix is on the
+`fix/canonicality` branch pending Gio's review, and the three
+invariant properties stay `#[ignore]`d on main until it merges.
+
+- [x] **Property tests** (`proptest` dev-dep in leadsheet-core):
       arbitrary valid `QSong` generator → `emit → parse → emit`
       byte-identical — THE primary invariant. Structural
       `parse(emit(q)) == q` only holds when generators are constrained
@@ -51,22 +58,22 @@ Make the invariants machine-enforced before anything moves.
       to satisfy an unconstrained generator. Plus
       `parse → render → ingest → quantize` note-F1 == 1.0 on
       already-quantized input.
-- [ ] **Parser robustness**: `&str` is valid UTF-8 by construction, so
+- [x] **Parser robustness**: `&str` is valid UTF-8 by construction, so
       the real properties are: arbitrary Unicode strings into `parse()`
       never panic (clean `Err`, bounded time/memory on pathological
       input); arbitrary *bytes* at the CLI file boundary produce a clean
       encoding error, not a crash.
-- [ ] **Golden corpus**: `corpus/` with paired `.mid` + `.ls` fixtures
+- [x] **Golden corpus**: `corpus/` with paired `.mid` + `.ls` fixtures
       (synthetic band pieces + at least one real MuScriptor transcription,
       trimmed). Regression test: compress output byte-identical to the
       committed `.ls`.
-- [ ] **Structured diagnostics**: `Diagnostic { code, line/col, message,
+- [x] **Structured diagnostics**: `Diagnostic { code, line/col, message,
       suggestion }` in `error.rs`; parse errors carry them. No new deps
       (no miette/ariadne), keep human `Display`. Goal: an LLM can
       self-repair a bad `.ls` from the diagnostic alone — test the common
       authoring mistakes (bad bar length, unknown lane, hold across
       barline, bad chord symbol, dangling `~P` reference).
-- [ ] **Agent-loop CLI**: `leadsheet check song.ls [--json]` (parse +
+- [x] **Agent-loop CLI**: `leadsheet check song.ls [--json]` (parse +
       validate, print diagnostics) and `leadsheet fmt song.ls` (parse +
       canonical emit — trivial by construction, never reinterprets).
 

@@ -155,6 +155,10 @@ leadsheet compress  in.mid  -o out.ls    # or MuScriptor .jsonl
 leadsheet render    out.ls  -o back.mid
 leadsheet roundtrip in.mid               # F1 + compression report
 leadsheet inspect   in.mid               # what would the compressor see
+leadsheet check     out.ls [--json]      # validate; diagnostics carry a code,
+                                         # line:col, message, and a suggestion
+leadsheet fmt       out.ls               # rewrite in canonical form (in place;
+                                         # -o for elsewhere, `-` for stdout)
 ```
 
 Tempo handling: a declared tempo whose grid fits the onsets poorly
