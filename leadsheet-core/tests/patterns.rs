@@ -98,6 +98,25 @@ fn dedup_is_lossless_and_canonical() {
 }
 
 #[test]
+fn sections_get_labels() {
+    let text = emit::emit(&structured_song());
+    let arrangement: String =
+        text.lines().skip_while(|l| *l != "arrangement:").collect::<Vec<_>>().join("\n");
+    // Verse (bass+drums) and chorus (adds lead) are different sections, and
+    // the chorus reprise reuses its letter.
+    let labeled: Vec<&str> = arrangement
+        .lines()
+        .filter_map(|l| l.trim().split_once(": [").map(|(label, _)| label))
+        .collect();
+    assert!(labeled.len() >= 3, "want several sections, got {labeled:?}\n{arrangement}");
+    let mut uniq = labeled.clone();
+    uniq.sort();
+    uniq.dedup();
+    assert!(uniq.len() < labeled.len(), "reprise should reuse a letter: {labeled:?}");
+    assert_eq!(labeled.last(), Some(&"outro"), "sparse last section: {labeled:?}");
+}
+
+#[test]
 fn pattern_count_stays_small() {
     // 68 bars × 3 instruments collapse to a handful of distinct bars.
     let text = emit::emit(&structured_song());

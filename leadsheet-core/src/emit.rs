@@ -423,23 +423,177 @@ pub fn emit(q: &QSong) -> String {
     }
 
     if !set.rows.is_empty() {
+        let labels = section_labels(&set, &forms);
         out.push('\n');
         out.push_str("arrangement:\n");
-        for row in &set.rows {
+        for (i, row) in set.rows.iter().enumerate() {
             let stack = if row.stack.is_empty() {
                 "z".to_string()
             } else {
                 row.stack.iter().map(|id| format!("P{id}")).collect::<Vec<_>>().join("+")
             };
+            let label = labels.get(&i).map(|l| format!("{l}: ")).unwrap_or_default();
             match row.reps {
                 1 => {
-                    let _ = writeln!(out, "  [{stack}]");
+                    let _ = writeln!(out, "  {label}[{stack}]");
                 }
                 n => {
-                    let _ = writeln!(out, "  [{stack}] x{n}");
+                    let _ = writeln!(out, "  {label}[{stack}] x{n}");
                 }
             }
         }
     }
     out
+}
+
+/// Self-similarity section labels over arrangement rows.
+///
+/// Rows are compared by the set of *variant roots* they stack (a hat
+/// variation doesn't start a new section); a similarity drop opens a
+/// section, and sections whose opening rows look alike share a letter
+/// (a reprise is labeled `A` again). Sparse first/last sections become
+/// `intro`/`outro`. Purely informational: the parser ignores labels, and
+/// they re-derive deterministically, keeping emission canonical.
+fn section_labels(
+    set: &pattern::PatternSet,
+    forms: &[PatternForm],
+) -> std::collections::HashMap<usize, String> {
+    use std::collections::{BTreeSet, HashMap};
+    // Variant chains point backwards, so roots resolve in one forward pass.
+    let mut root: Vec<usize> = (0..set.patterns.len()).collect();
+    for i in 0..set.patterns.len() {
+        match &forms[i] {
+            PatternForm::DrumsDiff { base, .. } => root[i] = root[*base],
+            PatternForm::Full { kin: Some(j) } => root[i] = root[*j],
+            PatternForm::Full { kin: None } => {}
+        }
+    }
+    let row_roots: Vec<BTreeSet<usize>> = set
+        .rows
+        .iter()
+        .map(|r| r.stack.iter().map(|id| root[id - 1]).collect())
+        .collect();
+    fn jaccard(a: &std::collections::BTreeSet<usize>, b: &std::collections::BTreeSet<usize>) -> f64 {
+        if a.is_empty() && b.is_empty() {
+            return 1.0;
+        }
+        let inter = a.intersection(b).count() as f64;
+        let union = a.union(b).count() as f64;
+        inter / union
+    }
+
+    // Novelty detection over bar-weighted windows: a boundary is where the
+    // material of the previous ~8 bars and the next ~8 bars stops
+    // overlapping. Sections are at least 4 bars — a one-bar fill is not a
+    // section.
+    const WINDOW_BARS: u32 = 8;
+    const MIN_SECTION_BARS: u32 = 4;
+    let window_union = |mut range: std::ops::Range<usize>,
+                        backwards: bool|
+     -> BTreeSet<usize> {
+        let mut acc = BTreeSet::new();
+        let mut bars = 0u32;
+        while !range.is_empty() && bars < WINDOW_BARS {
+            let i = if backwards { range.end - 1 } else { range.start };
+            acc.extend(row_roots[i].iter().copied());
+            bars += set.rows[i].reps;
+            if backwards {
+                range.end -= 1;
+            } else {
+                range.start += 1;
+            }
+        }
+        acc
+    };
+    // Novelty curve + adaptive threshold: through-composed material has a
+    // uniformly low baseline similarity, so boundaries are *relative* peaks
+    // (mean + σ/2, floored at 0.6), not absolute dissimilarity.
+    let n_rows = row_roots.len();
+    let mut novelty = vec![0.0f64; n_rows];
+    for (i, nov) in novelty.iter_mut().enumerate().skip(1) {
+        let before = window_union(0..i, true);
+        let after = window_union(i..n_rows, false);
+        *nov = 1.0 - jaccard(&before, &after);
+    }
+    let mean = novelty[1..].iter().sum::<f64>() / (n_rows - 1).max(1) as f64;
+    let sd = (novelty[1..].iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+        / (n_rows - 1).max(1) as f64)
+        .sqrt();
+    let threshold = (mean + 0.5 * sd).max(0.6);
+
+    let mut starts: Vec<usize> = vec![0];
+    let mut bars_since_start = 0u32;
+    for i in 1..n_rows {
+        bars_since_start += set.rows[i - 1].reps;
+        if bars_since_start < MIN_SECTION_BARS {
+            continue;
+        }
+        let is_peak = novelty[i] >= novelty[i - 1]
+            && novelty[i] >= novelty.get(i + 1).copied().unwrap_or(0.0);
+        if is_peak && novelty[i] >= threshold {
+            starts.push(i);
+            bars_since_start = 0;
+        }
+    }
+
+    let track_count = |sig: &BTreeSet<usize>| {
+        sig.iter().map(|&i| set.patterns[i].track).collect::<BTreeSet<_>>().len()
+    };
+    let letter = |n: usize| {
+        let c = (b'A' + (n % 26) as u8) as char;
+        std::iter::repeat_n(c, n / 26 + 1).collect::<String>()
+    };
+
+    // A section's signature is its opening window (more stable than its
+    // first row alone).
+    let sigs: Vec<BTreeSet<usize>> = starts
+        .iter()
+        .enumerate()
+        .map(|(k, &start)| {
+            let end = starts.get(k + 1).copied().unwrap_or(row_roots.len());
+            window_union(start..end, false)
+        })
+        .collect();
+    let mut named: Vec<(BTreeSet<usize>, String, usize)> = Vec::new(); // (sig, label, uses)
+    let mut labels: HashMap<usize, String> = HashMap::new();
+    let mut order: Vec<usize> = Vec::new(); // labeled start rows, in order
+    for (&start, sig) in starts.iter().zip(&sigs) {
+        if sig.is_empty() {
+            continue; // silent gap, no label
+        }
+        let label = match named.iter_mut().find(|(s, _, _)| jaccard(s, sig) > 0.5) {
+            Some((_, name, uses)) => {
+                *uses += 1;
+                name.clone()
+            }
+            None => {
+                let name = letter(named.len());
+                named.push((sig.clone(), name.clone(), 1));
+                name
+            }
+        };
+        labels.insert(start, label);
+        order.push(start);
+    }
+    if order.len() < 2 {
+        return HashMap::new(); // one section = no information
+    }
+    // Sparse endpoints read better as intro/outro — only when their letter
+    // isn't reused elsewhere.
+    let uses_of = |row: usize, labels: &HashMap<usize, String>| {
+        named.iter().find(|(_, l, _)| l == &labels[&row]).map(|(_, _, u)| *u).unwrap_or(0)
+    };
+    let sig_of = |row: usize| &sigs[starts.iter().position(|s| *s == row).unwrap()];
+    let (first, second) = (order[0], order[1]);
+    if uses_of(first, &labels) == 1 && track_count(sig_of(first)) < track_count(sig_of(second)) {
+        labels.insert(first, "intro".into());
+    }
+    let (last, prev) = (order[order.len() - 1], order[order.len() - 2]);
+    if last != first
+        && uses_of(last, &labels) == 1
+        && track_count(sig_of(last)) < track_count(sig_of(prev))
+    {
+        labels.insert(last, "outro".into());
+    }
+    labels
 }
