@@ -270,8 +270,11 @@ fn drum_lane_map(segs: &[Seg], cells_per_bar: u32, base: u8) -> Lanes {
                 notation::Mark::None => LANE_HIT,
             },
         };
+        // Drum hits are on the 16th grid by construction (parse lanes and
+        // quantize both emit cell-aligned onsets); hosts constructing
+        // off-grid drums get a panic here until QSong::validate() (B3).
         lanes.entry(s.pitch).or_insert_with(|| vec![LANE_EMPTY; cells_per_bar as usize])
-            [s.onset.as_sixteenths() as usize] = code;
+            [s.onset.as_sixteenths_exact() as usize] = code;
     }
     lanes
 }

@@ -86,25 +86,47 @@ Acceptance: `cargo test` green incl. new suites; no format changes.
 Today `parse()` flattens patterns/arrangement into `QSong`, discarding
 source structure. Hosts (and the eventual CRDT layer) need the structure.
 
+Decisions adopted from the 2026-07-12 review triage, before any types
+are written:
+
+- **One canonical, the Document's** (B1): `fmt` becomes
+  Document-canonical — hand-authored structure (multi-bar patterns,
+  author numbering, direct bars) survives it. Compressor output is just
+  one particular Document; `leadsheet compress` stays the only thing
+  that invents structure. The diff tool inherits this identity.
+- **Real signatures** (B2): `parse_document(&str) -> Result<Document>`,
+  `Document::resolve() -> Result<QSong>`,
+  `emit_document(&Document) -> String`,
+  `Document::from_qsong(&QSong) -> Document` (what the compressor
+  builds). Existing `parse`/`emit` remain as compatibility wrappers
+  (`parse_document(...)?.resolve()` / `emit_document(&from_qsong(q))`).
+- **Validation boundary** (B3): `Document::validate()` /
+  `QSong::validate()` preflight — hosts and wasm callers construct
+  these types directly, and today only parser/quantizer discipline
+  keeps fields sane (render clamps unrepresentable tempo since the
+  triage; off-grid drum onsets still panic in lane emission). CLI entry
+  points call validate; no new deps, no format change.
+
 - [ ] New `doc` module: `Document { header, patterns: Vec<PatternDef>,
       arrangement: Vec<Row>, direct_bars }` — the faithful AST of a `.ls`
-      file, all pattern kinds (melodic/chordal/drums, variants, dynamics).
-- [ ] Split the pipeline: `parse(text) -> Document`,
-      `Document::resolve() -> QSong` (compilation),
-      `emit(&Document) -> text` and `Document::from_qsong(q)` (what the
-      compressor builds). Existing `parse`/`emit` signatures stay as thin
-      wrappers so nothing downstream breaks.
+      file, all pattern kinds (melodic/chordal/drums, variants, dynamics),
+      tuplets as semantic objects (unlocks inexact divisions à la
+      septuplet, per DESIGN-960's placement rule).
+- [ ] Split the pipeline per B2 above.
 - [ ] Canonicality oracle extends to the Document layer:
-      `emit(parse(text)) == text` for canonical text, byte-for-byte,
-      same as today.
+      `emit_document(parse_document(text)) == text` for canonical text,
+      byte-for-byte.
+- [ ] `Document::validate()` / `QSong::validate()` per B3 above.
 - [ ] **Semantic diff**: `leadsheet diff a.ls b.ls` over Documents, not
       lines. Reports at the right granularity: header changes, pattern
       added/removed/modified (per-lane for drums, per-bar for melodic),
       arrangement row changes. Plain-text output a human or LLM reads
       directly; `--json` only when a real consumer exists.
+- [ ] Pin current mixed direct-bar + arrangement semantics with tests
+      before the resolver changes the plumbing (triage E6).
 
-Acceptance: all existing tests + corpus green; emitted text unchanged
-byte-for-byte vs. Phase 1.
+Acceptance: all existing tests + corpus green; compressor-emitted text
+unchanged byte-for-byte vs. Phase 1.
 
 ## Phase 3 — Clock refactor + rhythmic depth
 
@@ -170,6 +192,15 @@ the format settles (post-Phase 3).
       Starter tasks: transpose w/o rhythm change; edit drums w/o touching
       other tracks; extend section by 4 bars; reharmonize preserving top
       line; repair deliberately-broken `.ls` from diagnostics.
+- [ ] **Retroactive spelling bake-off** (governance debt from 3b): measure
+      `/` fractions and `(n …)S` tuplets across models — zero-shot
+      comprehension, spec-in-context writing validity, edit-task pass
+      rate — and report; the data may overturn the delegated spellings.
+- [ ] **Expected-behavior fixture**: quantization snaps to 16ths, so
+      fractional/tuplet content does not survive MIDI → compress
+      (deliberate, DESIGN-960: authoring resolution ≠ transcription
+      resolution). Encode as a fixture so it's protected, not
+      rediscovered as a bug.
 - [ ] One CLI entry (`leadsheet eval <dir>`) that checks saved model
       outputs against constraints and prints a pass/fail table. No API
       calls, no model deps in the crate.
@@ -219,24 +250,30 @@ the format settles (post-Phase 3).
 ## Syntax governance (amends invariant 4)
 
 The format's users are LLMs, not humans — so **syntax is decided by
-measured model performance, not anyone's taste**. Every format change:
-candidate spellings → parse-only throwaway impls → LLM bake-off
-(zero-shot comprehension, spec-in-context writing validity, edit-task
-constraint pass rate) → winner productionized. Gio's role: veto on
-scope and invariants (no data loss, canonicality, crate boundary) —
-not spelling. A minimal bake-off harness is therefore pulled ahead of
-Phase 3's syntax work (it's a subset of Phase 4's eval fixtures).
+measured model performance, not anyone's taste**. The default process
+for a format change: candidate spellings → parse-only throwaway impls →
+LLM bake-off (zero-shot comprehension, spec-in-context writing validity,
+edit-task constraint pass rate) → winner productionized. Gio's role:
+veto on scope and invariants (no data loss, canonicality, crate
+boundary) — not spelling.
 
-## Order & rationale
+**Recorded exception (2026-07-12):** the `/`-fraction and `(n …)S`
+tuplet spellings shipped on Gio's explicit delegation to the resident
+LLM user, on prior-alignment grounds (both are real ABC's own
+conventions), without a multi-model bake-off. Phase 4's eval harness
+therefore **retroactively measures both spellings** as one of its first
+jobs, and the data may overturn them. One governance story: measured by
+default, this one delegated and to be back-measured.
 
-**1 → 3a (clock internals, zero format changes) → syntax bake-off →
-3b (winning tuplet/32nd syntax) → 2 → 4 → 5.** Safety nets first (1) —
-proptest + golden corpus prove the clock refactor (3a) lands with
-byte-identical emission on all existing files. The 960-tick internals
-need no syntax decisions, so they never block on the bake-off. Then the
-Document model + diff (2), full eval fixtures (4), host enablement (5).
-Per Sol's process note: 3a starts with a short written design note
-(current meanings of `cell`/`dur_cells`, modules assuming 4 cells/beat,
-deterministic tuplet-boundary rounding `round(i·960/n)` closing the span
-exactly, MIDI out at 960 PPQ, test vectors) — reviewed once, then
-implemented in one coherent migration.
+## Order & rationale (as it actually happened)
+
+**1 → 3a → 3b → 2 → 4 → 5.** Safety nets first (1) — proptest + golden
+corpus proved the clock refactor (3a) landed with byte-identical
+emission on all existing files (DESIGN-960.md was the reviewed design
+note). 3b followed immediately under the delegated-spelling exception
+above. Next: the Document model + diff (2, decisions B1–B3 recorded at
+the top of Phase 2), then eval fixtures (4) including the retroactive
+spelling measurements and an expected-behavior fixture pinning that
+quantization snaps to 16ths (authoring is finer than transcription —
+fractional/tuplet content deliberately does not survive a MIDI →
+compress trip), then host enablement (5).

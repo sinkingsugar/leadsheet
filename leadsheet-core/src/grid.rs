@@ -37,15 +37,19 @@ impl MusicalTime {
         MusicalTime(n as i64 * TICKS_PER_BEAT)
     }
 
-    /// Ticks → 16th cells, for text spelling. Exact by construction until
-    /// sub-16th syntax exists (tuplets/32nds are Phase 3b).
-    pub fn as_sixteenths(self) -> u32 {
-        debug_assert!(
-            self.0 % TICKS_PER_SIXTEENTH == 0,
-            "sub-16th time ({} ticks) cannot be spelled yet",
-            self.0
-        );
-        (self.0 / TICKS_PER_SIXTEENTH) as u32
+    /// Ticks → whole 16th cells, when exactly on the cell grid.
+    pub fn try_as_sixteenths(self) -> Option<u32> {
+        (self.0 % TICKS_PER_SIXTEENTH == 0).then_some((self.0 / TICKS_PER_SIXTEENTH) as u32)
+    }
+
+    /// Ticks → 16th cells for callers that are on-grid by construction
+    /// (quantizer output, drum lane positions). Panics off-grid in every
+    /// build profile — silent truncation would corrupt positions, which
+    /// is strictly worse than crashing. Sub-16th melodic time is spelled
+    /// via [`crate::notation::dur_text`], never through this.
+    pub fn as_sixteenths_exact(self) -> u32 {
+        self.try_as_sixteenths()
+            .unwrap_or_else(|| panic!("{} ticks is not on the 16th grid", self.0))
     }
 
     pub fn ticks(self) -> i64 {
@@ -126,14 +130,15 @@ impl QNote {
         }
     }
 
-    /// Onset in 16th cells (the text unit; exact for on-grid content).
+    /// Onset in 16th cells — the text-unit view, for on-grid content
+    /// (panics on sub-16th onsets; see [`MusicalTime::as_sixteenths_exact`]).
     pub fn cell(&self) -> u32 {
-        self.onset.as_sixteenths()
+        self.onset.as_sixteenths_exact()
     }
 
-    /// Duration in 16th cells (the text unit; exact for on-grid content).
+    /// Duration in 16th cells — the text-unit view, for on-grid content.
     pub fn dur_cells(&self) -> u32 {
-        self.dur.as_sixteenths()
+        self.dur.as_sixteenths_exact()
     }
 }
 

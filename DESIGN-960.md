@@ -1,6 +1,8 @@
 # DESIGN-960 — the clock refactor (PLAN Phase 3a)
 
-**Implemented 2026-07-12** (same session, on Gio's go). Decision already
+**Implemented 2026-07-12** (same session, on Gio's go), and 3b's syntax
+(`/` fractions, `(n …)S` tuplet groups) shipped the same day — mentions
+of tuplet syntax as "future"/"3b" below are historical. Decision already
 made with Gio: **960 ticks per beat**, integer math, `i64`, one constant,
 never serialized. This note was the audit of what moved and the rules
 that kept emission byte-identical — retained as the clock's reference.

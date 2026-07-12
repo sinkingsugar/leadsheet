@@ -41,9 +41,11 @@ use std::collections::HashMap;
 
 const BUCKETS: [u8; 6] = [32, 48, 64, 80, 96, 112];
 
-/// One template event: a note/chord (melodic, times in ticks) or a hit
-/// (drums, where `onset_ticks` is cell-aligned and `dur_ticks` doubles as
-/// the stroke count 1..=4).
+/// One template event — a generator-local shape, not an IR type: a
+/// note/chord (melodic, times in ticks) or a hit (drums, where
+/// `onset_ticks` is cell-aligned and this struct's `dur_ticks` field is
+/// reused as the stroke count 1..=4; the QSong it assembles into keeps
+/// strokes separate).
 #[derive(Debug, Clone)]
 struct Ev {
     onset_ticks: i64,
