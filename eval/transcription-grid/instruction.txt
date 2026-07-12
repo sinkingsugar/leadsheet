@@ -1,0 +1,4 @@
+Expected-behavior fixture, not a model task (D3): authoring resolution
+is finer than transcription resolution. Rendering this file to MIDI and
+compressing it back snaps every onset to the 16th grid — fractional and
+tuplet content deliberately does not survive the trip.

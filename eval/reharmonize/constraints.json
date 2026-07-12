@@ -1,0 +1,6 @@
+[
+  { "type": "parses" },
+  { "type": "top_line_unchanged", "track": "piano" },
+  { "type": "track_changed", "track": "piano" },
+  { "type": "n_bars", "equals": 2 }
+]

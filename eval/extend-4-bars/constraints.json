@@ -1,0 +1,5 @@
+[
+  { "type": "parses" },
+  { "type": "bars_unchanged", "upto": 8 },
+  { "type": "n_bars", "equals": 12 }
+]

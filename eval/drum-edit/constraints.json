@@ -1,0 +1,6 @@
+[
+  { "type": "parses" },
+  { "type": "track_changed", "track": "drums" },
+  { "type": "tracks_unchanged", "tracks": ["bass"] },
+  { "type": "n_bars", "equals": 4 }
+]

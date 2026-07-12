@@ -1,0 +1,2 @@
+Transpose the lead track up a whole step (2 semitones). Do not change
+its rhythm, and do not touch any other track.

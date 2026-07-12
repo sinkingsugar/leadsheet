@@ -2,6 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+mod eval;
+
 #[derive(Parser)]
 #[command(name = "leadsheet", version, about = "MIDI ↔ compact semantic text")]
 struct Cli {
@@ -86,6 +88,9 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Check saved model outputs in an eval directory against their
+    /// musical constraints; print a pass/fail table (exit 1 on any FAIL).
+    Eval { dir: PathBuf },
     /// Semantic diff of two leadsheet files, over their Documents (per
     /// bar for melodic/chordal, per lane for drums). Exit 1 when they
     /// differ.
@@ -268,6 +273,11 @@ fn main() -> Result<()> {
                     }
                     std::process::exit(1);
                 }
+            }
+        }
+        Cmd::Eval { dir } => {
+            if !eval::run(&dir)? {
+                std::process::exit(1);
             }
         }
         Cmd::Diff { a, b } => {

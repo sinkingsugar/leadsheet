@@ -1,0 +1,3 @@
+This file does not pass `leadsheet check` (the bar is 2 cells short).
+Fix it by lengthening the final note so the bar sums exactly, changing
+nothing else. The intended music is in no other way different.

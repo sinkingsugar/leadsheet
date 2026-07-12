@@ -1,0 +1,2 @@
+Reharmonize the piano: keep the top note of every chord exactly where
+it is, but change the harmony underneath it.

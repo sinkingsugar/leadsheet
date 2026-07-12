@@ -1,0 +1,4 @@
+[
+  { "type": "parses" },
+  { "type": "matches", "file": "target.ls" }
+]

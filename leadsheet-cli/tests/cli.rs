@@ -145,3 +145,33 @@ fn garbage_bytes_are_a_clean_error() {
         assert!(!out.status.success(), "{args:?} must fail on garbage bytes");
     }
 }
+
+/// The Phase 4 harness self-tests on its committed sample outputs; a
+/// FAIL here means a fixture or checker regressed.
+#[test]
+fn eval_harness_passes_on_sample_outputs() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("eval");
+    let out = bin().args(["eval"]).arg(&dir).output().unwrap();
+    no_panic(&out);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(!stdout.contains("FAIL"), "{stdout}");
+    assert!(stdout.contains("transcription-grid :: transcription_snaps"), "{stdout}");
+    // A wrong answer fails the right constraint.
+    let tmp = std::env::temp_dir().join(format!("leadsheet-eval-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let task = tmp.join("transpose-up-2");
+    std::fs::create_dir_all(&task).unwrap();
+    for f in ["input.ls", "instruction.txt", "constraints.json"] {
+        std::fs::copy(dir.join("transpose-up-2").join(f), task.join(f)).unwrap();
+    }
+    // Model "answer": transposed the wrong way.
+    let wrong = std::fs::read_to_string(dir.join("transpose-up-2/input.ls"))
+        .unwrap()
+        .replace("| e4 c4 d4 B4 |", "| d4 _B4 c4 A4 |");
+    std::fs::write(task.join("output.ls"), wrong).unwrap();
+    let out = bin().args(["eval"]).arg(&tmp).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("FAIL  transpose-up-2 :: pitch_shift"));
+    let _ = std::fs::remove_dir_all(&tmp);
+}

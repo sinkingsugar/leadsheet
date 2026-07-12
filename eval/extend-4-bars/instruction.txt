@@ -1,0 +1,2 @@
+Extend the song by 4 bars: keep the existing 8 bars exactly as they
+are, then add a 4-bar tail of your choosing using the same instruments.

@@ -1,0 +1,6 @@
+[
+  { "type": "parses" },
+  { "type": "pitch_shift", "track": "lead", "semitones": 2 },
+  { "type": "tracks_unchanged", "tracks": ["bass"] },
+  { "type": "n_bars", "equals": 2 }
+]
