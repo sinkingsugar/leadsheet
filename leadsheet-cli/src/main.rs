@@ -163,13 +163,14 @@ fn main() -> Result<()> {
             let opts = leadsheet_core::grid::QuantizeOptions { bpm_override: bpm, infer_tempo };
             let (qsong, report) = leadsheet_core::grid::quantize(&song, &opts);
             println!(
-                "grid: {:.2} BPM ({:?}), origin {:+.3} s, {} bars of {}/{}",
+                "grid: {:.2} BPM ({:?}), origin {:+.3} s, {} bars of {}/{}, key {}",
                 report.bpm,
                 report.tempo_source,
                 report.origin,
                 qsong.n_bars,
                 qsong.meter.0,
                 qsong.meter.1,
+                qsong.key.map(|k| k.name()).unwrap_or_else(|| "?".into()),
             );
             println!(
                 "µtiming discarded by 1/16 snap: mean {:.1} ms, max {:.1} ms",

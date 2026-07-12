@@ -16,6 +16,7 @@ fn tricky_qsong() -> QSong {
         name: "tricky".into(),
         bpm: 132.5,
         meter: (4, 4),
+        key: None,
         n_bars: 5,
         tracks: vec![
             QTrack {
@@ -43,7 +44,8 @@ fn tricky_qsong() -> QSong {
                 name: "drums".into(),
                 program: 0,
                 is_drums: true,
-                notes: vec![n(36, 0, 2), n(42, 0, 1), n(38, 4, 2), n(36, 8, 2), n(46, 14, 2)],
+                // One-shots: quantization normalizes drum durations to 1 cell.
+                notes: vec![n(36, 0, 1), n(42, 0, 1), n(38, 4, 1), n(36, 8, 1), n(46, 14, 1)],
             },
         ],
     }

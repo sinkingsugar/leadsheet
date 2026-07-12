@@ -33,6 +33,8 @@ pub struct QSong {
     /// (numerator, denominator). Only 4/4 is produced for now (meter
     /// detection is M5); cells-per-bar math already honors the field.
     pub meter: (u32, u32),
+    /// Estimated key (header + spelling); `None` = unknown, spell sharps.
+    pub key: Option<crate::key::Key>,
     pub n_bars: u32,
     pub tracks: Vec<QTrack>,
 }
@@ -111,7 +113,10 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
                     note_count += 1;
                     let cell = cell_i.max(0) as u32;
                     let end = snap(n.end()).max(0) as u32;
-                    let dur_cells = end.saturating_sub(cell).max(1);
+                    // Drum hits are one-shots; their length carries no
+                    // information (MuScriptor emits a fixed minimum anyway).
+                    let dur_cells =
+                        if t.is_drums { 1 } else { end.saturating_sub(cell).max(1) };
                     max_end_cell = max_end_cell.max(cell + dur_cells);
                     QNote { pitch: n.pitch, cell, dur_cells, vel: n.vel }
                 })
@@ -125,10 +130,12 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
         name: song.name.clone(),
         bpm,
         meter: (4, 4),
+        key: None,
         n_bars: 0,
         tracks,
     };
     qsong.n_bars = max_end_cell.div_ceil(qsong.cells_per_bar());
+    qsong.key = crate::key::detect(&qsong);
 
     let report = QuantizeReport {
         bpm,

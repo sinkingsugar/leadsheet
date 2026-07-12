@@ -4,11 +4,14 @@
 //! chordify/voices → pattern dedup → text emission; plus the inverse
 //! (parse → render to MIDI), which is the correctness oracle.
 
+pub mod chord;
+pub mod drums;
 pub mod emit;
 pub mod error;
 pub mod gm;
 pub mod grid;
 pub mod ingest;
+pub mod key;
 pub mod metrics;
 pub mod model;
 pub mod notation;

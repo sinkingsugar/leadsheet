@@ -33,7 +33,6 @@ impl Tok {
     }
 }
 
-/// Sharps-only spelling for now; key-aware spelling arrives with Layer 2.
 const SHARP_NAMES: [(char, i8); 12] = [
     ('C', 0),
     ('C', 1),
@@ -49,12 +48,31 @@ const SHARP_NAMES: [(char, i8); 12] = [
     ('B', 0),
 ];
 
-pub fn pitch_to_abc(pitch: u8) -> String {
-    let (letter, acc) = SHARP_NAMES[(pitch % 12) as usize];
+const FLAT_NAMES: [(char, i8); 12] = [
+    ('C', 0),
+    ('D', -1),
+    ('D', 0),
+    ('E', -1),
+    ('E', 0),
+    ('F', 0),
+    ('G', -1),
+    ('G', 0),
+    ('A', -1),
+    ('A', 0),
+    ('B', -1),
+    ('B', 0),
+];
+
+/// Key-aware spelling: flat keys write `_B`, sharp keys `^A`.
+pub fn pitch_to_abc_spelled(pitch: u8, flats: bool) -> String {
+    let (letter, acc) =
+        if flats { FLAT_NAMES[(pitch % 12) as usize] } else { SHARP_NAMES[(pitch % 12) as usize] };
     let octave = (pitch / 12) as i32 - 1; // MIDI 60 = C4
     let mut s = String::new();
-    if acc == 1 {
-        s.push('^');
+    match acc {
+        1 => s.push('^'),
+        -1 => s.push('_'),
+        _ => {}
     }
     if octave >= 5 {
         s.push(letter.to_ascii_lowercase());
@@ -68,6 +86,10 @@ pub fn pitch_to_abc(pitch: u8) -> String {
         }
     }
     s
+}
+
+pub fn pitch_to_abc(pitch: u8) -> String {
+    pitch_to_abc_spelled(pitch, false)
 }
 
 /// Parse one pitch from the start of `s`, returning it and the rest of `s`.
@@ -173,16 +195,20 @@ pub fn parse_token(tok: &str) -> Result<Tok, String> {
 }
 
 pub fn emit_token(tok: &Tok) -> String {
+    emit_token_spelled(tok, false)
+}
+
+pub fn emit_token_spelled(tok: &Tok, flats: bool) -> String {
     let mut s = String::new();
     let (dur, tie) = match tok {
         Tok::Note { pitch, dur, tie } => {
-            s.push_str(&pitch_to_abc(*pitch));
+            s.push_str(&pitch_to_abc_spelled(*pitch, flats));
             (*dur, *tie)
         }
         Tok::Chord { pitches, dur, tie } => {
             s.push('[');
             for p in pitches {
-                s.push_str(&pitch_to_abc(*p));
+                s.push_str(&pitch_to_abc_spelled(*p, flats));
             }
             s.push(']');
             (*dur, *tie)

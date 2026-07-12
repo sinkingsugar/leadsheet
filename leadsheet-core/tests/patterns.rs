@@ -39,10 +39,10 @@ fn structured_song() -> QSong {
                     }
                 }
             }
-            // Drums everywhere except the outro.
+            // Drums everywhere except the outro (one-shots: dur 1).
             if kind != "outro" {
                 for (c, p) in [(0u32, 36u8), (8, 36), (4, 38), (12, 38)] {
-                    drums.push(n(p, base + c, 2));
+                    drums.push(n(p, base + c, 1));
                 }
                 for i in 0..8 {
                     drums.push(n(42, base + i * 2, 1));
@@ -64,6 +64,7 @@ fn structured_song() -> QSong {
         name: "structured".into(),
         bpm: 120.0,
         meter: (4, 4),
+        key: None,
         n_bars: 68,
         tracks: vec![
             QTrack { name: "bass".into(), program: 33, is_drums: false, notes: bass },
