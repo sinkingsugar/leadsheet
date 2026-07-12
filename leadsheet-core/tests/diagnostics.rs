@@ -210,6 +210,19 @@ fn duplicate_drum_lane_is_an_error() {
 }
 
 #[test]
+fn sub_hundredth_tempo_is_rejected_with_the_repair_value() {
+    // B1 (triage-3): source BPM is hundredth-canonical — the emitter
+    // spells {:.2}, so finer precision would be silently rewritten by
+    // the first fmt. Rejected with the quantized spelling instead.
+    let text = "# song: t  tempo: 100.001  meter: 4/4  grid: 1/16\n\
+                # instruments: p:0\nb1 p | C16 |\n";
+    let d = expect(text, "bad-tempo", 1, "tempo: 100.00");
+    assert!(d.message.contains("sub-hundredth"), "{d}");
+    // The canonical spelling itself stays legal, obviously.
+    assert!(parse::parse(&text.replace("100.001", "100.00")).is_ok());
+}
+
+#[test]
 fn instrument_names_are_whitelisted() {
     // '[' would reroute lines referencing the instrument as arrangement
     // rows; '#' would comment out an emitted drum opener. The whitelist

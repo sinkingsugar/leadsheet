@@ -474,7 +474,7 @@ fn first_tuplet_span(d: &mut Document) -> Option<&mut MusicalTime> {
 /// Apply hostile mutation `which`, walking forward past inapplicable
 /// ones (mutation 0 always applies). Returns the mutation's name.
 fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 21;
+    const N: u32 = 22;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -560,6 +560,10 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
             }),
             20 => ("tuplet span below arity", {
                 first_tuplet_span(d).map(|s| *s = MusicalTime(1)).is_some()
+            }),
+            21 => ("sub-hundredth tempo", {
+                d.header.bpm += 0.001;
+                true
             }),
             _ => unreachable!(),
         };

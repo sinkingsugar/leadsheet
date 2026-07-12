@@ -179,6 +179,17 @@ impl Document {
     /// text that reparses and resolves to the same music.
     pub fn validate(&self) -> Result<(), Error> {
         validate_header(&self.header)?;
+        // B1 (triage-3): source BPM is canonically hundredth-quantized —
+        // emission spells `{:.2}`, so finer precision would be silently
+        // rewritten by the first `fmt`. This is a *source* rule: QSong
+        // bpm stays a raw f64 (ingest measures arbitrary tempos) and
+        // `from_qsong` quantizes at the boundary.
+        if !bpm_is_canonical(self.header.bpm) {
+            return Err(doc_err(format!(
+                "tempo {} carries sub-hundredth precision the text cannot hold (nearest: {:.2})",
+                self.header.bpm, self.header.bpm
+            )));
+        }
         let cpb = self.header.cells_per_bar();
         let bar = self.header.bar_ticks();
         let mut names = std::collections::HashSet::new();
@@ -487,6 +498,14 @@ impl QSong {
         }
         Ok(())
     }
+}
+
+/// Canonical BPM = survives its own `{:.2}` spelling (the emitted form).
+/// Defined by the round-trip rather than arithmetic so there is exactly
+/// one notion of "fits in the text" and no float-rounding edge between
+/// the check and the emitter.
+pub(crate) fn bpm_is_canonical(bpm: f64) -> bool {
+    format!("{bpm:.2}").parse::<f64>() == Ok(bpm)
 }
 
 /// The name whitelist (decision B3): the only instrument/track names that

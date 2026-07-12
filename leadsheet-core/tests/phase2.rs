@@ -323,6 +323,25 @@ fn validate_closes_the_triage_3_holes() {
     assert!(mutate_sym(&|s| s.quality = QUALITIES.len()).validate().is_err());
 }
 
+/// B1 (triage-3): BPM is canonically hundredth-quantized in SOURCE —
+/// emission spells `{:.2}`, so finer precision was silently rewritten
+/// by the first `fmt`. QSong bpm stays a raw f64 (ingest measures
+/// arbitrary tempos); `from_qsong` quantizes at the boundary in.
+#[test]
+fn bpm_is_hundredth_canonical_in_source() {
+    let good = doc(AUTHOR);
+    let mut d = good.clone();
+    d.header.bpm = 100.001;
+    assert!(d.validate().is_err(), "sub-hundredth source tempo");
+
+    let mut q = good.resolve().unwrap();
+    q.bpm = 100.001;
+    q.validate().expect("a measured QSong tempo stays raw");
+    let back = emit::from_qsong(&q);
+    assert_eq!(back.header.bpm, 100.0, "quantized at the boundary into source");
+    back.validate().expect("from_qsong output validates");
+}
+
 /// The flip side of the label rules: odd-but-harmless labels (']' or ':'
 /// before the '[' never confuse the row parser) stay legal and survive
 /// the canonical loop.

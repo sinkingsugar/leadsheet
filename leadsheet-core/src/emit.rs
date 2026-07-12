@@ -604,7 +604,9 @@ pub fn from_qsong(q: &QSong) -> Document {
     Document {
         header: Header {
             name: q.name.clone(),
-            bpm: q.bpm,
+            // Source BPM is hundredth-canonical (B1); measured tempos
+            // (ingest) quantize here, at the boundary into source.
+            bpm: format!("{:.2}", q.bpm).parse().expect("a {:.2} spelling always parses"),
             meter: q.meter,
             key: q.key,
             swing: q.swing,

@@ -108,7 +108,10 @@ pub fn diff(a: &Document, b: &Document) -> String {
 
     // Timeline: one ordered, positional walk. Same-kind items get the
     // detailed report; a kind flip at a position is itself the finding
-    // (the interleaving carries tie semantics).
+    // (the interleaving carries tie semantics). "row N" counts rows of
+    // the *edited* (b) side — one definition, so numbering stays honest
+    // after an interleaving change (D1); a/b row numbers can't both be
+    // right once kinds flip.
     let mut row_no = 0usize;
     for i in 0..a.timeline.len().max(b.timeline.len()) {
         match (a.timeline.get(i), b.timeline.get(i)) {
@@ -137,7 +140,7 @@ pub fn diff(a: &Document, b: &Document) -> String {
                 }
             }
             (Some(x), Some(y)) => {
-                if matches!(x, TimelineItem::Row(_)) {
+                if matches!(y, TimelineItem::Row(_)) {
                     row_no += 1;
                 }
                 let _ =

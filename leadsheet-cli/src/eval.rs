@@ -200,6 +200,9 @@ fn matches_exactly(q: &QSong, target: &QSong) -> (bool, Option<String>) {
     (true, None)
 }
 
+/// NB: velocity is currently NOT part of the key — mangled dynamics pass
+/// `matches`. Open policy decision (B4, PLAN.md Phase 4); settle before
+/// the eval runs.
 type NoteKey = (u8, i64, i64, u8);
 
 fn key(n: &leadsheet_core::grid::QNote) -> NoteKey {

@@ -27,7 +27,10 @@ arrangement:
 
 - `# song: NAME  tempo: BPM  meter: N/D  key: K  swing: S  grid: 1/16` —
   `key` is optional (spelling hint only, never changes pitch semantics);
-  only `grid: 1/16` exists today. Meter denominator 4 or 8.
+  only `grid: 1/16` exists today. Meter denominator 4 or 8. `tempo` is
+  spelled to hundredths of a BPM (`96.00`) — that is the format's full
+  tempo precision, and finer values are rejected rather than silently
+  rounded.
 - `swing:` (optional): shuffle feel, applied at render time. `swing: 66%`
   pushes every offbeat 8th to 66% through its beat (50 = straight,
   66 = triplet shuffle); `swing: 16th 58%` swings the offbeat 16ths
@@ -36,7 +39,8 @@ arrangement:
   note keeps its notated duration (the whole note shifts, as a player
   would), so it may overlap the next straight onset by the swing amount.
 - `# instruments: name:PROGRAM ...` — GM program number, or `kit` for the
-  drum channel. Declaration order is track order.
+  drum channel. Declaration order is track order. Names use letters,
+  digits, `_` and `-` only.
 - Any other `#` line is a comment.
 
 ## Time

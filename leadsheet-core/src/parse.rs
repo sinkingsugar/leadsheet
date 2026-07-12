@@ -828,6 +828,14 @@ fn parse_header_line(
                 .hint("MIDI tempo is 24-bit microseconds per beat: roughly 3.6 to 60000000 BPM")
                 .at(bpm_tok));
         }
+        // B1: source BPM is canonically hundredth-quantized — the emitter
+        // spells `{:.2}`, so finer precision would silently change on the
+        // first fmt. Reject with the repair value instead.
+        if !crate::doc::bpm_is_canonical(bpm) {
+            return Err(raw("bad-tempo", format!("tempo {bpm} carries sub-hundredth precision"))
+                .hint(format!("tempo is spelled to hundredths of a BPM: write `tempo: {bpm:.2}`"))
+                .at(bpm_tok));
+        }
         *header = Some(Header { name, bpm, meter, key, swing });
         return Ok(());
     }
