@@ -42,12 +42,14 @@ through Gio.
 
 Make the invariants machine-enforced before anything moves.
 
-**Status: landed 2026-07-12** (tests/props.rs, tests/robustness.rs,
+**Status: DONE 2026-07-12** (tests/props.rs, tests/robustness.rs,
 tests/diagnostics.rs, tests/corpus.rs + corpus/, CLI check/fmt). The
 property suite immediately caught three canonicality bugs in parse tie
-tracking and emit dynamic-base derivation; the fix is on the
-`fix/canonicality` branch pending Gio's review, and the three
-invariant properties stay `#[ignore]`d on main until it merges.
+tracking and emit dynamic-base derivation; fixed and merged
+(`fix/canonicality`, reviewed by Gio) — ties are a multiset of pending
+continuations matched by end cell, and the `@dyn` base derives from
+parse-observable token-group votes. All properties run un-ignored.
+Tagged `phase-1`.
 
 - [x] **Property tests** (`proptest` dev-dep in leadsheet-core):
       arbitrary valid `QSong` generator → `emit → parse → emit`

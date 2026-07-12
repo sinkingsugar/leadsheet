@@ -17,12 +17,12 @@ authoring-expression layer: dynamics, drum stroke subdivision, swing.
 Battle-tested on a real 3.5k-note MuScriptor transcription (roundtrip
 F1 0.9997) and on pieces composed directly as text.
 
-PLAN.md Phase 1 (bulletproofing) landed: proptest invariant properties,
-fuzz + hardened parser (panic-free, bounded, structured diagnostics),
-golden corpus in `corpus/`, and the `check`/`fmt` agent loop. The
-property suite caught three canonicality bugs; the fix sits on the
-`fix/canonicality` branch awaiting Gio's review (the three properties
-are `#[ignore]`d on main until it merges).
+PLAN.md Phase 1 (bulletproofing) is done and tagged `phase-1`: proptest
+invariant properties (running un-ignored, 3 canonicality bugs found and
+fixed), fuzz + hardened parser (panic-free, bounded, structured
+diagnostics), golden corpus in `corpus/`, and the `check`/`fmt` agent
+loop. Next: Phase 3a — the 960 ticks-per-beat clock refactor, starting
+from the design note in `DESIGN-960.md`.
 
 ## Map
 
@@ -75,14 +75,10 @@ from the MuScriptor HF cache.
 
 ## Next / deferred
 
-- **Merge decision pending:** `fix/canonicality` — three
-  property-suite-found bugs in parse tie tracking and emit `@dyn` base
-  derivation (details in the branch commit and
-  `leadsheet-core/tests/props.rs`). Verified: 4000 proptest cases per
-  property, corpus byte-identical, Matrix.mid output byte-identical.
-  After merging, the three `#[ignore]`s in props.rs come off.
-- Melodic 32nds (`/` duration fractions): needs the internal clock moved
-  to the 960-ticks-per-beat base first (PLAN.md Phase 3a). Drum
+- **Phase 3a (hot):** clock refactor to 960 ticks/beat — design note in
+  `DESIGN-960.md`, reviewed once, then one coherent migration. Unblocks
+  melodic 32nds, triplets, grace notes.
+- Melodic 32nds (`/` duration fractions): blocked on Phase 3a. Drum
   subdivision shipped without it (drum `dur_cells` is a stroke count).
 - Per-track swing override (drums shuffle, pads straight) — floated,
   undecided.
