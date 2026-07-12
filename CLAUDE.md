@@ -72,11 +72,10 @@ from the MuScriptor HF cache.
 - Velocity re-estimation from audio lives in the MuScriptor candle port,
   not here; the format slot (`@dyn`, `>`/`~`, `X`/`o`) is ready.
 
-## Upstream
+## Upstream (optional)
 
-[MuScriptor](https://github.com/muscriptor/muscriptor) (Kyutai/Mirelo),
-source at `~/devel/muscriptor`. Its jsonl schema is verified against
-`main.py::_event_to_dict` (`{"type":"start"|"end", ..., "start_event_index"}`),
-streamed per 5 s chunk — the hook for a future live mode. **License note:
-MuScriptor weights are CC BY-NC 4.0 (code MIT)** — fine for personal and
-research use; talk to Kyutai/Mirelo before anything commercial ships.
+leadsheet has no dependency on [MuScriptor](https://github.com/muscriptor/muscriptor)
+(Kyutai/Mirelo) — it just understands its jsonl output as one ingest
+format, verified against `main.py::_event_to_dict`
+(`{"type":"start"|"end", ..., "start_event_index"}`), streamed per 5 s
+chunk — the hook for a future live mode. Any MIDI source works.
