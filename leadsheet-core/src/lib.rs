@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod model;
 pub mod notation;
 pub mod parse;
+pub mod pattern;
 pub mod render;
 pub mod tempo;
 

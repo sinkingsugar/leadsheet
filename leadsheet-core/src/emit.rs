@@ -1,19 +1,26 @@
-//! Layer 4 (minimal) — QSong → text. Explicit bars, no pattern dedup yet.
+//! Layer 4 — QSong → text: patterns + arrangement.
 //!
 //! ```text
 //! # song: demo  tempo: 120.00  meter: 4/4  grid: 1/16
 //! # instruments: bass:33 drums:kit lead:81
 //!
-//! b1 bass  | A,,4 A,,4 G,,4 E,,4 |
-//! b1 drums | [C,^F,]2 ^F, ... |
-//! b2 bass  | ... |
+//! P1 bass  | A,,4 A,,4 G,,4 E,,4 |
+//! P2 drums | [C,^F,]2 ^F, ... |
+//! P3 lead  | e2 c2 d2 B2 c4 A4 |
+//!
+//! arrangement:
+//!   [P1+P2] x4
+//!   [P1+P2+P3] x8
 //! ```
 //!
+//! Identical (instrument, bar) contents share one pattern; the arrangement
+//! lists bar-stacks with run-length encoding (see [`crate::pattern`]).
 //! Notes crossing a bar line are split and tied (`-`). Overlapping notes
 //! that can't stack into one chord are separated into voices with ` & `.
 
 use crate::grid::{QSong, QTrack};
 use crate::notation::{Tok, emit_token};
+use crate::pattern;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
@@ -113,24 +120,48 @@ pub fn emit(q: &QSong) -> String {
     out.push('\n');
 
     let cpb = q.cells_per_bar();
-    let per_track: Vec<Vec<Vec<Seg>>> =
-        q.tracks.iter().map(|t| split_bars(t, cpb, q.n_bars)).collect();
+    let bodies: Vec<Vec<Option<String>>> = q
+        .tracks
+        .iter()
+        .map(|t| {
+            split_bars(t, cpb, q.n_bars)
+                .iter()
+                .map(|segs| {
+                    let voices = bar_voices(segs, cpb);
+                    (!voices.is_empty()).then(|| voices.join(" & "))
+                })
+                .collect()
+        })
+        .collect();
 
-    let bar_w = q.n_bars.to_string().len();
+    let set = pattern::build(&bodies);
+    let id_w = set.patterns.len().to_string().len();
     let name_w = q.tracks.iter().map(|t| t.name.len()).max().unwrap_or(0);
-    for bar in 0..q.n_bars as usize {
-        for (track, bars) in q.tracks.iter().zip(&per_track) {
-            let voices = bar_voices(&bars[bar], cpb);
-            if voices.is_empty() {
-                continue;
+    for p in &set.patterns {
+        let _ = writeln!(
+            out,
+            "P{:<id_w$} {:<name_w$} | {} |",
+            p.id, q.tracks[p.track].name, p.body
+        );
+    }
+
+    if !set.rows.is_empty() {
+        out.push('\n');
+        out.push_str("arrangement:\n");
+        for row in &set.rows {
+            let stack = if row.stack.is_empty() {
+                "z".to_string()
+            } else {
+                row.stack.iter().map(|id| format!("P{id}")).collect::<Vec<_>>().join("+")
+            };
+            match row.reps {
+                1 => {
+                    let _ = writeln!(out, "  [{stack}]");
+                }
+                n => {
+                    let _ = writeln!(out, "  [{stack}] x{n}");
+                }
             }
-            let _ = writeln!(
-                out,
-                "b{:<bar_w$} {:<name_w$} | {} |",
-                bar + 1,
-                track.name,
-                voices.join(" & "),
-            );
         }
     }
     out
