@@ -49,7 +49,7 @@ impl QSong {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TempoSource {
     /// Constant tempo declared by the source file, grid anchored at t=0.
     Declared,
@@ -57,6 +57,9 @@ pub enum TempoSource {
     Inferred,
     /// User-supplied BPM; phase/downbeat still estimated from onsets.
     Override,
+    /// The file declared a tempo, but onsets fit an inferred grid much
+    /// better (live takes against a default click), so it was replaced.
+    AutoInferred { declared_bpm: f64, declared_mean_ms: f64 },
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -65,6 +68,27 @@ pub struct QuantizeOptions {
     pub bpm_override: Option<f64>,
     /// Infer tempo from onsets even if the source declares one.
     pub infer_tempo: bool,
+    /// Trust a declared tempo unconditionally (disables the auto-switch).
+    pub no_infer: bool,
+}
+
+/// Declared grids with residuals above this are suspects for auto-switch.
+const AUTO_INFER_TRIGGER_MS: f64 = 25.0;
+/// The inferred grid must be at least this much tighter to win.
+const AUTO_INFER_RATIO: f64 = 0.6;
+
+/// Mean |onset − nearest grid point| in ms for a grid hypothesis.
+fn mean_residual_ms(song: &RawSong, bpm: f64, origin: f64) -> f64 {
+    let cell = 60.0 / (bpm * CELLS_PER_BEAT as f64);
+    let (mut sum, mut n) = (0.0, 0usize);
+    for t in &song.tracks {
+        for note in &t.notes {
+            let k = ((note.onset - origin) / cell).round();
+            sum += ((note.onset - origin) - k * cell).abs() * 1e3;
+            n += 1;
+        }
+    }
+    if n == 0 { 0.0 } else { sum / n as f64 }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +107,25 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
     let (bpm, origin, tempo_source) = match (opts.bpm_override, opts.infer_tempo, song.source_bpm)
     {
         (Some(bpm), _, _) => (bpm, tempo::align_known_bpm(song, bpm), TempoSource::Override),
-        (None, false, Some(bpm)) => (bpm, 0.0, TempoSource::Declared),
+        (None, false, Some(declared)) => {
+            let declared_mean = mean_residual_ms(song, declared, 0.0);
+            let mut choice = (declared, 0.0, TempoSource::Declared);
+            if !opts.no_infer && declared_mean > AUTO_INFER_TRIGGER_MS {
+                let est = tempo::estimate(song);
+                let inferred_mean = mean_residual_ms(song, est.bpm, est.origin);
+                if inferred_mean < AUTO_INFER_RATIO * declared_mean {
+                    choice = (
+                        est.bpm,
+                        est.origin,
+                        TempoSource::AutoInferred {
+                            declared_bpm: declared,
+                            declared_mean_ms: declared_mean,
+                        },
+                    );
+                }
+            }
+            choice
+        }
         _ => {
             let est = tempo::estimate(song);
             (est.bpm, est.origin, TempoSource::Inferred)

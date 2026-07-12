@@ -14,6 +14,9 @@ struct TempoArgs {
     /// Infer tempo from onsets even if the file declares one.
     #[arg(long)]
     infer_tempo: bool,
+    /// Trust the declared tempo unconditionally (no auto-switch).
+    #[arg(long, conflicts_with = "infer_tempo")]
+    no_infer_tempo: bool,
     /// Force this BPM (phase/downbeat still estimated).
     #[arg(long)]
     bpm: Option<f64>,
@@ -24,7 +27,20 @@ impl TempoArgs {
         leadsheet_core::grid::QuantizeOptions {
             bpm_override: self.bpm,
             infer_tempo: self.infer_tempo,
+            no_infer: self.no_infer_tempo,
         }
+    }
+}
+
+fn tempo_notice(report: &leadsheet_core::grid::QuantizeReport) {
+    if let leadsheet_core::grid::TempoSource::AutoInferred { declared_bpm, declared_mean_ms } =
+        report.tempo_source
+    {
+        eprintln!(
+            "note: declared {declared_bpm:.2} BPM fits poorly (mean {declared_mean_ms:.0} ms off-grid); \
+             using inferred {:.2} BPM (mean {:.0} ms). --no-infer-tempo to override",
+            report.bpm, report.mean_abs_residual_ms
+        );
     }
 }
 
@@ -70,6 +86,7 @@ fn main() -> Result<()> {
         Cmd::Compress { input, output, tempo } => {
             let song = leadsheet_core::ingest::ingest_path(&input)?;
             let (qsong, report) = leadsheet_core::grid::quantize(&song, &tempo.options());
+            tempo_notice(&report);
             let text = leadsheet_core::emit::emit(&qsong);
             let naive = leadsheet_core::metrics::naive_event_text(&song).len();
             let out_path = output.unwrap_or_else(|| input.with_extension("ls"));
@@ -106,6 +123,7 @@ fn main() -> Result<()> {
         Cmd::Roundtrip { input, keep_text, tempo } => {
             let song = leadsheet_core::ingest::ingest_path(&input)?;
             let report = leadsheet_core::metrics::roundtrip(&song, &tempo.options())?;
+            tempo_notice(&report.quant);
             if let Some(path) = keep_text {
                 std::fs::write(&path, &report.text)?;
                 eprintln!("wrote {}", path.display());
@@ -160,7 +178,11 @@ fn main() -> Result<()> {
                     }
                 );
             }
-            let opts = leadsheet_core::grid::QuantizeOptions { bpm_override: bpm, infer_tempo };
+            let opts = leadsheet_core::grid::QuantizeOptions {
+                bpm_override: bpm,
+                infer_tempo,
+                ..Default::default()
+            };
             let (qsong, report) = leadsheet_core::grid::quantize(&song, &opts);
             println!(
                 "grid: {:.2} BPM ({:?}), origin {:+.3} s, {} bars of {}/{}, key {}",

@@ -180,7 +180,7 @@ fn declared_tempo_is_exact() {
 fn bpm_override_estimates_phase() {
     let s = synth_song(140.0, 0.25, 12, 8.0, 99);
     let (_, report) =
-        quantize(&s.song, &QuantizeOptions { bpm_override: Some(140.0), infer_tempo: false });
+        quantize(&s.song, &QuantizeOptions { bpm_override: Some(140.0), ..Default::default() });
     assert_eq!(report.tempo_source, TempoSource::Override);
     assert!((report.bpm - 140.0).abs() < 0.2);
     // Origin should sit near the true 0.25 s start (mod whole bars).
@@ -188,6 +188,34 @@ fn bpm_override_estimates_phase() {
     let rel = (report.origin - 0.25).rem_euclid(bar);
     let dist = rel.min(bar - rel);
     assert!(dist < 0.05, "origin {:.3}, expected ≈0.25 mod bar (dist {dist:.3})", report.origin);
+}
+
+#[test]
+fn auto_switch_when_declared_tempo_lies() {
+    // Played at 125 against a DAW that stamped 120 (the Matrix.mid case).
+    let mut s = synth_song(125.0, 0.2, 16, 8.0, 77);
+    s.song.source_bpm = Some(120.0);
+    let (_, report) = quantize(&s.song, &QuantizeOptions::default());
+    match report.tempo_source {
+        TempoSource::AutoInferred { declared_bpm, declared_mean_ms } => {
+            assert_eq!(declared_bpm, 120.0);
+            assert!(declared_mean_ms > 25.0);
+        }
+        other => panic!("expected AutoInferred, got {other:?} at {:.2} BPM", report.bpm),
+    }
+    assert!((report.bpm - 125.0).abs() <= 1.0, "bpm {:.2}", report.bpm);
+
+    // Opt-out keeps the declared grid.
+    let (_, report) =
+        quantize(&s.song, &QuantizeOptions { no_infer: true, ..Default::default() });
+    assert_eq!(report.tempo_source, TempoSource::Declared);
+    assert_eq!(report.bpm, 120.0);
+
+    // And an honest declared tempo is left alone.
+    let mut s = synth_song(120.0, 0.0, 16, 5.0, 78);
+    s.song.source_bpm = Some(120.0);
+    let (_, report) = quantize(&s.song, &QuantizeOptions::default());
+    assert_eq!(report.tempo_source, TempoSource::Declared);
 }
 
 #[test]
