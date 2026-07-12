@@ -107,8 +107,11 @@ fn roman(key: &Key, root: u8, suffix: &str) -> String {
     // prefix (the usual jazz convention: bII, bIII, bV, bVI, bVII).
     const MAJOR: [&str; 12] =
         ["I", "bII", "II", "bIII", "III", "IV", "bV", "V", "bVI", "VI", "bVII", "VII"];
+    // Offset 10 is the natural seventh (subtonic, G in Am -> VII);
+    // offset 11 the raised leading tone (G# in Am -> #VII, so the
+    // classical vii° reads #vii°). Distinct names for distinct roots.
     const MINOR: [&str; 12] =
-        ["I", "bII", "II", "III", "#III", "IV", "bV", "V", "VI", "#VI", "VII", "VII"];
+        ["I", "bII", "II", "III", "#III", "IV", "bV", "V", "VI", "#VI", "VII", "#VII"];
     let base = if key.minor { MINOR[deg as usize] } else { MAJOR[deg as usize] };
     let minorish = matches!(suffix, "m" | "m7" | "dim" | "m7b5");
     let numeral: String = if minorish { base.to_lowercase() } else { base.to_string() };
@@ -151,6 +154,23 @@ b4 bass | E,,8 A,,8 |
         assert_eq!(h[2], "VII", "{h:?}");
         // Bar 4 is dominated by E7 (V7 in minor) resolving home.
         assert!(h[3].starts_with('V') || h[3] == "i", "{h:?}");
+    }
+
+    /// E1: every chromatic root spells a *distinct* degree in both
+    /// tables — G (VII) and G# (#VII) in A minor were both "VII" once,
+    /// making the raised leading tone unreadable.
+    #[test]
+    fn chromatic_degrees_are_distinct_in_both_tables() {
+        for minor in [false, true] {
+            let key = Key { tonic_pc: 9, minor }; // A / Am
+            let names: Vec<String> = (0..12u8).map(|off| roman(&key, (9 + off) % 12, "")).collect();
+            let unique: std::collections::HashSet<&String> = names.iter().collect();
+            assert_eq!(unique.len(), 12, "minor={minor}: {names:?}");
+        }
+        // The classical pair, pinned: subtonic vs raised leading tone.
+        let am = Key { tonic_pc: 9, minor: true };
+        assert_eq!(roman(&am, 7, ""), "VII", "G major in Am");
+        assert_eq!(roman(&am, 8, "dim"), "#vii°", "G#dim in Am");
     }
 
     #[test]

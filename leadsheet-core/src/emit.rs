@@ -301,8 +301,8 @@ fn drum_lane_map(segs: &[Seg], cells_per_bar: u32, base: u8) -> Lanes {
             },
         };
         // Drum hits are on the 16th grid by construction (parse lanes and
-        // quantize both emit cell-aligned onsets); hosts constructing
-        // off-grid drums get a panic here until QSong::validate() (B3).
+        // quantize both emit cell-aligned onsets); QSong::validate()
+        // rejects off-grid host-built hits before they can panic here.
         lanes.entry(s.pitch).or_insert_with(|| vec![LANE_EMPTY; cells_per_bar as usize])
             [s.onset.as_sixteenths_exact() as usize] = code;
     }
@@ -645,11 +645,15 @@ pub fn emit_document(d: &Document) -> String {
         }
     }
     out.push_str("  grid: 1/16\n");
-    let _ = writeln!(
-        out,
-        "# instruments: {}",
-        d.instruments.iter().map(instrument_field).collect::<Vec<_>>().join(" ")
-    );
+    if d.instruments.is_empty() {
+        out.push_str("# instruments:\n");
+    } else {
+        let _ = writeln!(
+            out,
+            "# instruments: {}",
+            d.instruments.iter().map(instrument_field).collect::<Vec<_>>().join(" ")
+        );
+    }
     out.push('\n');
 
     let name_field = |p: &PatternDef| -> String {

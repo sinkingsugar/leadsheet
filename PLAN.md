@@ -110,9 +110,10 @@ Decisions adopted from the 2026-07-12 review triage (all implemented):
 - **Validation boundary** (B3): `Document::validate()` /
   `QSong::validate()` preflight — hosts and wasm callers construct
   these types directly, and today only parser/quantizer discipline
-  keeps fields sane (render clamps unrepresentable tempo since the
-  triage; off-grid drum onsets still panic in lane emission). CLI entry
-  points call validate; no new deps, no format change.
+  keeps fields sane. CLI entry points call validate; no new deps, no
+  format change. (Closed by triage-2: unrepresentable tempo is a parse
+  diagnostic, off-grid drum onsets are a validate error, and
+  `document_canonicality` in tests/doc_props.rs proves the boundary.)
 
 - [x] New `doc` module — the faithful AST (timeline replaces separate
       arrangement/direct vecs: source order is tie-semantic), tuplets as
@@ -167,18 +168,20 @@ open below: per-track swing (unblessed).
 - [x] Melodic 32nds — `/` fraction spelling (exactly ABC's prior:
       `C/2` halves the unit). Shipped 2026-07-12.
 - [x] Melodic tuplets — `(3 C D E)4` shipped 2026-07-12 (equal members,
-      marks allowed, group tie, no nesting; inexact divisions like a
-      lone septuplet are rejected until the Document layer can hold
-      them semantically). Spelling decided by the resident LLM user on
+      marks allowed, group tie, no nesting; inexact divisions —
+      septuplets — were rejected at first and became semantic objects
+      on the Document the same day, placing by the boundary rule).
+      Spelling decided by the resident LLM user on
       Gio's delegation — prior-alignment with ABC on both features —
       rather than a multi-model bake-off; the Phase 4 eval harness can
       re-measure and overturn the spelling if data disagrees. Internal
       weights (`(3 C2 D)4`) deliberately left out for now.
 - [ ] Per-track swing override (drums shuffle / pads straight).
       [GIO: floated, still undecided — skip unless blessed]
-- [ ] Design note only (no implementation): the tick model must not
+- [x] Design note only (no implementation): the tick model must not
       hard-assume constant tempo, so a future tempo map doesn't force a
-      third clock migration.
+      third clock migration. Satisfied by DESIGN-960.md — `MusicalTime`
+      is tempo-agnostic ticks; tempo lives only in the header field.
 
 Acceptance: full oracle + corpus green; old files emit byte-identical;
 new rhythms roundtrip.
@@ -194,6 +197,12 @@ calls, no model deps in the crate.
       change; drum edit w/o touching other tracks; extend by 4 bars;
       reharmonize preserving the top line; repair from diagnostics),
       each with committed known-good sample outputs.
+- [ ] **Duplet duality** (G1, triage-2, Gio decides): `(2 C D)4` and
+      `C2 D2` are the same music with two stable canonical spellings —
+      the format's first one-music-two-canonicals case (any power-of-two
+      arity: `detect_tuplets` never creates them, `fmt` preserves an
+      authored one). Options: bless it in FORMAT.md, have `fmt` demote
+      trivial tuplets, or fold it into the bake-off below.
 - [ ] **Retroactive spelling bake-off** (governance debt from 3b): measure
       `/` fractions and `(n …)S` tuplets across models — zero-shot
       comprehension, spec-in-context writing validity, edit-task pass

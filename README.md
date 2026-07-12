@@ -71,8 +71,10 @@ fluidsynth -ni -F out.wav -r 44100 your_soundfont.sf2 back.mid
   when the canonical stacked voicing reconstructs the exact pitches;
   anything else stays explicit. Data is never lost to a wrong name.
 - **An expression layer for composing**: dynamics buckets (`@pp`…`@ff`),
-  accents/ghosts, drum stroke subdivision, swing — all round-trippable,
-  all documented in [FORMAT.md](FORMAT.md).
+  accents/ghosts, drum stroke subdivision, swing, fraction durations
+  (`e/2` = a 32nd, `C3/2` = a dotted 16th) and true tuplet groups
+  (`(3 C D E)4`, septuplet-class divisions included) — all
+  round-trippable, all documented in [FORMAT.md](FORMAT.md).
 
 The whole text format is specified in **[FORMAT.md](FORMAT.md)** — short
 enough to paste into an LLM prompt next to a song, which is the intended
