@@ -39,10 +39,13 @@ pub fn ingest_jsonl(text: &str, song_name: &str) -> Result<RawSong, Error> {
         let (kind, body) = classify(&v);
         match kind {
             EventKind::Start => {
-                let pitch = get_u8(body, &["pitch", "note", "key"])
-                    .ok_or_else(|| Error::Jsonl(format!("line {}: start event without pitch", lineno + 1)))?;
-                let onset = get_f64(body, &["start_time", "start", "onset", "time"])
-                    .ok_or_else(|| Error::Jsonl(format!("line {}: start event without time", lineno + 1)))?;
+                let pitch = get_u8(body, &["pitch", "note", "key"]).ok_or_else(|| {
+                    Error::Jsonl(format!("line {}: start event without pitch", lineno + 1))
+                })?;
+                let onset =
+                    get_f64(body, &["start_time", "start", "onset", "time"]).ok_or_else(|| {
+                        Error::Jsonl(format!("line {}: start event without time", lineno + 1))
+                    })?;
                 let inst = get_str(body, &["instrument", "inst", "track"]).unwrap_or("unknown");
                 last_time = last_time.max(onset);
                 match get_u64(body, &["index", "id"]) {
@@ -56,11 +59,14 @@ pub fn ingest_jsonl(text: &str, song_name: &str) -> Result<RawSong, Error> {
                 }
             }
             EventKind::End => {
-                let end = get_f64(body, &["end_time", "end", "time"])
-                    .ok_or_else(|| Error::Jsonl(format!("line {}: end event without time", lineno + 1)))?;
+                let end = get_f64(body, &["end_time", "end", "time"]).ok_or_else(|| {
+                    Error::Jsonl(format!("line {}: end event without time", lineno + 1))
+                })?;
                 last_time = last_time.max(end);
-                let idx =
-                    get_u64(body, &["start_event_index", "start_event", "start_index", "index", "id"]);
+                let idx = get_u64(
+                    body,
+                    &["start_event_index", "start_event", "start_index", "index", "id"],
+                );
                 if let Some((pitch, onset, inst)) = idx.and_then(|i| pending.remove(&i)) {
                     notes.push((
                         inst,
@@ -70,10 +76,13 @@ pub fn ingest_jsonl(text: &str, song_name: &str) -> Result<RawSong, Error> {
                 // An end we can't pair carries no pitch — nothing to salvage.
             }
             EventKind::FlatNote => {
-                let pitch = get_u8(body, &["pitch", "note", "key"])
-                    .ok_or_else(|| Error::Jsonl(format!("line {}: note without pitch", lineno + 1)))?;
-                let onset = get_f64(body, &["start_time", "start", "onset", "time"])
-                    .ok_or_else(|| Error::Jsonl(format!("line {}: note without start", lineno + 1)))?;
+                let pitch = get_u8(body, &["pitch", "note", "key"]).ok_or_else(|| {
+                    Error::Jsonl(format!("line {}: note without pitch", lineno + 1))
+                })?;
+                let onset =
+                    get_f64(body, &["start_time", "start", "onset", "time"]).ok_or_else(|| {
+                        Error::Jsonl(format!("line {}: note without start", lineno + 1))
+                    })?;
                 let dur = get_f64(body, &["duration", "dur"])
                     .or_else(|| get_f64(body, &["end_time", "end"]).map(|e| e - onset))
                     .unwrap_or(ORPHAN_DUR)

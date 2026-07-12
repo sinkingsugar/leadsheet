@@ -60,11 +60,7 @@ pub const GHOST_THRESHOLD: i16 = -16;
 
 /// Nearest dynamic bucket (ties resolve to the softer one).
 pub fn vel_to_dynamic(vel: u8) -> (&'static str, u8) {
-    DYNAMICS
-        .iter()
-        .copied()
-        .min_by_key(|(_, v)| (vel as i16 - *v as i16).abs())
-        .unwrap()
+    DYNAMICS.iter().copied().min_by_key(|(_, v)| (vel as i16 - *v as i16).abs()).unwrap()
 }
 
 pub fn dynamic_to_vel(name: &str) -> Option<u8> {

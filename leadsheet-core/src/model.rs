@@ -54,11 +54,7 @@ impl RawSong {
 
     /// End of the last note, in seconds. 0.0 for an empty song.
     pub fn duration(&self) -> f64 {
-        self.tracks
-            .iter()
-            .flat_map(|t| t.notes.iter())
-            .map(RawNote::end)
-            .fold(0.0, f64::max)
+        self.tracks.iter().flat_map(|t| t.notes.iter()).map(RawNote::end).fold(0.0, f64::max)
     }
 }
 
@@ -66,8 +62,7 @@ impl RawSong {
 pub(crate) fn finalize_tracks(mut tracks: Vec<RawTrack>) -> Vec<RawTrack> {
     tracks.retain(|t| !t.notes.is_empty());
     for t in &mut tracks {
-        t.notes
-            .sort_by(|a, b| a.onset.total_cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
+        t.notes.sort_by(|a, b| a.onset.total_cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
     }
     let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for t in &mut tracks {

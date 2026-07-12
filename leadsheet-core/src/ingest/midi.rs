@@ -51,10 +51,7 @@ impl TempoMap {
     /// The single BPM if the file only ever states one tempo value.
     fn constant_bpm(&self) -> Option<f64> {
         let first = self.changes[0].1;
-        self.changes
-            .iter()
-            .all(|&(_, us)| us == first)
-            .then(|| 60e6 / first as f64)
+        self.changes.iter().all(|&(_, us)| us == first).then(|| 60e6 / first as f64)
     }
 }
 
@@ -99,7 +96,8 @@ pub fn ingest_midi(bytes: &[u8], song_name: &str) -> Result<RawSong, Error> {
         // program active per channel (0..16) in this track
         let mut programs = [0u8; 16];
         // open notes: (channel, key) -> stack of (onset_sec, vel, program)
-        let mut open: HashMap<(u8, u8), Vec<(f64, u8, u8)>> = HashMap::new();
+        type OpenNotes = HashMap<(u8, u8), Vec<(f64, u8, u8)>>;
+        let mut open: OpenNotes = HashMap::new();
 
         for ev in track {
             tick += ev.delta.as_int() as u64;
@@ -134,7 +132,9 @@ pub fn ingest_midi(bytes: &[u8], song_name: &str) -> Result<RawSong, Error> {
                                 let gk = GroupKey { track: track_idx, channel: ch };
                                 builders
                                     .entry(gk)
-                                    .or_insert_with(|| GroupBuilder::new(track_name.clone(), program, ch == 9))
+                                    .or_insert_with(|| {
+                                        GroupBuilder::new(track_name.clone(), program, ch == 9)
+                                    })
                                     .notes
                                     .push(RawNote { pitch: key, onset, dur, vel });
                             }
@@ -169,10 +169,7 @@ pub fn ingest_midi(bytes: &[u8], song_name: &str) -> Result<RawSong, Error> {
 
     let mut keys: Vec<_> = builders.keys().copied().collect();
     keys.sort();
-    let tracks = keys
-        .into_iter()
-        .map(|k| builders.remove(&k).unwrap().build())
-        .collect();
+    let tracks = keys.into_iter().map(|k| builders.remove(&k).unwrap().build()).collect();
 
     Ok(RawSong {
         name: song_name.to_string(),
@@ -231,7 +228,9 @@ fn ingest_timecode(smf: &Smf, ticks_per_sec: f64, song_name: &str) -> Result<Raw
                 TrackEventKind::Midi { channel, message } => {
                     let ch = channel.as_int();
                     match message {
-                        MidiMessage::ProgramChange { program } => programs[ch as usize] = program.as_int(),
+                        MidiMessage::ProgramChange { program } => {
+                            programs[ch as usize] = program.as_int()
+                        }
                         MidiMessage::NoteOn { key, vel } if vel.as_int() > 0 => {
                             open.entry((ch, key.as_int())).or_default().push((sec, vel.as_int()));
                         }

@@ -189,7 +189,9 @@ mod tests {
 
     #[test]
     fn symbols_roundtrip() {
-        for s in ["Am", "C", "G7", "Fmaj7", "Dsus4", "Bdim", "F#m7", "C6", "Am7(2)", "F/A", "G/B(2)"] {
+        for s in
+            ["Am", "C", "G7", "Fmaj7", "Dsus4", "Bdim", "F#m7", "C6", "Am7(2)", "F/A", "G/B(2)"]
+        {
             assert_eq!(roundtrip(s), s);
         }
     }

@@ -3,9 +3,7 @@
 
 use crate::grid::{CELLS_PER_BEAT, QSong};
 use midly::num::{u4, u7, u15, u24, u28};
-use midly::{
-    Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind,
-};
+use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
 
 pub const PPQ: u16 = 480;
 pub const TICKS_PER_CELL: u32 = PPQ as u32 / CELLS_PER_BEAT; // 120
@@ -41,10 +39,7 @@ pub fn render(q: &QSong) -> Vec<u8> {
                 8,
             )),
         },
-        TrackEvent {
-            delta: u28::new(0),
-            kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
-        },
+        TrackEvent { delta: u28::new(0), kind: TrackEventKind::Meta(MetaMessage::EndOfTrack) },
     ]);
 
     let mut next_melodic_channel = 0u8;

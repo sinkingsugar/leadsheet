@@ -49,14 +49,10 @@ const T44_GENERIC: [f64; 16] =
     [3.0, 0.1, 0.3, 0.1, 1.2, 0.1, 0.3, 0.1, 2.0, 0.1, 0.3, 0.1, 1.2, 0.1, 0.3, 0.1];
 const T44_SNARE: [f64; 16] =
     [0.1, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1, 0.1, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1];
-const T34_GENERIC: [f64; 12] =
-    [3.0, 0.1, 0.3, 0.1, 1.5, 0.1, 0.3, 0.1, 1.5, 0.1, 0.3, 0.1];
-const T34_SNARE: [f64; 12] =
-    [0.1, 0.1, 0.3, 0.1, 2.5, 0.1, 0.3, 0.1, 2.5, 0.1, 0.3, 0.1];
-const T68_GENERIC: [f64; 12] =
-    [3.0, 0.1, 0.6, 0.1, 0.6, 0.1, 2.0, 0.1, 0.6, 0.1, 0.6, 0.1];
-const T68_SNARE: [f64; 12] =
-    [0.1, 0.1, 0.3, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1, 0.3, 0.1];
+const T34_GENERIC: [f64; 12] = [3.0, 0.1, 0.3, 0.1, 1.5, 0.1, 0.3, 0.1, 1.5, 0.1, 0.3, 0.1];
+const T34_SNARE: [f64; 12] = [0.1, 0.1, 0.3, 0.1, 2.5, 0.1, 0.3, 0.1, 2.5, 0.1, 0.3, 0.1];
+const T68_GENERIC: [f64; 12] = [3.0, 0.1, 0.6, 0.1, 0.6, 0.1, 2.0, 0.1, 0.6, 0.1, 0.6, 0.1];
+const T68_SNARE: [f64; 12] = [0.1, 0.1, 0.3, 0.1, 0.3, 0.1, 4.0, 0.1, 0.3, 0.1, 0.3, 0.1];
 
 const METERS: &[MeterSpec] = &[
     MeterSpec { meter: (4, 4), cells: 16, generic: &T44_GENERIC, snare: &T44_SNARE, bias: 1.0 },
@@ -252,7 +248,8 @@ fn beat_period(evs: &[Ev]) -> (f64, f64) {
     let lag_f = if best_lag > lag_min && best_lag < lag_max {
         let (a, b, c) = (score(best_lag - 1), best_sc, score(best_lag + 1));
         let denom = a - 2.0 * b + c;
-        let delta = if denom.abs() > 1e-12 { (0.5 * (a - c) / denom).clamp(-0.5, 0.5) } else { 0.0 };
+        let delta =
+            if denom.abs() > 1e-12 { (0.5 * (a - c) / denom).clamp(-0.5, 0.5) } else { 0.0 };
         best_lag as f64 + delta
     } else {
         best_lag as f64

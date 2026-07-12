@@ -233,8 +233,7 @@ fn drum_lane_map(segs: &[Seg], cells_per_bar: u32, base: u8) -> Lanes {
 
 /// Render lanes as tab lines, cells grouped by beat.
 fn render_lanes(entries: &[(u8, Vec<u8>)]) -> String {
-    let label_w =
-        entries.iter().map(|(p, _)| drums::lane_label(*p).len()).max().unwrap_or(1);
+    let label_w = entries.iter().map(|(p, _)| drums::lane_label(*p).len()).max().unwrap_or(1);
     entries
         .iter()
         .map(|(pitch, cells)| {
@@ -328,10 +327,15 @@ const KINSHIP_THRESHOLD: f64 = 0.6;
 
 /// How each pattern gets written: possibly as a variant of an earlier one.
 enum PatternForm {
-    Full { kin: Option<usize> },
+    Full {
+        kin: Option<usize>,
+    },
     /// Drums only: base pattern index + the lanes that differ from it
     /// (a lane cleared relative to the base appears as all dots).
-    DrumsDiff { base: usize, lanes: Vec<(u8, Vec<u8>)> },
+    DrumsDiff {
+        base: usize,
+        lanes: Vec<(u8, Vec<u8>)>,
+    },
 }
 
 fn instrument_field(t: &QTrack) -> String {
@@ -341,11 +345,8 @@ fn instrument_field(t: &QTrack) -> String {
 pub fn emit(q: &QSong) -> String {
     let flats = q.key.map(|k| k.use_flats()).unwrap_or(false);
     let mut out = String::new();
-    let _ = write!(
-        out,
-        "# song: {}  tempo: {:.2}  meter: {}/{}",
-        q.name, q.bpm, q.meter.0, q.meter.1
-    );
+    let _ =
+        write!(out, "# song: {}  tempo: {:.2}  meter: {}/{}", q.name, q.bpm, q.meter.0, q.meter.1);
     if let Some(key) = q.key {
         let _ = write!(out, "  key: {}", key.name());
     }
@@ -383,7 +384,9 @@ pub fn emit(q: &QSong) -> String {
                         Body::Drums { base, lanes: drum_lane_map(segs, cpb, base) }
                     } else if let Some(c) =
                         // Chord columns are quarter-note beats; only /4 meters.
-                        (q.meter.1 == 4).then(|| try_chordal(segs, cpb, flats)).flatten()
+                        (q.meter.1 == 4)
+                            .then(|| try_chordal(segs, cpb, flats))
+                            .flatten()
                     {
                         Body::Chordal { base, text: c }
                     } else {
@@ -418,15 +421,14 @@ pub fn emit(q: &QSong) -> String {
         .map(|i| match pattern_bodies[i] {
             Body::Drums { lanes: lanes_i, .. } => {
                 let mut best: Option<(usize, usize)> = None; // (cost, base)
-                for j in 0..i {
+                for (j, body_j) in pattern_bodies.iter().enumerate().take(i) {
                     if set.patterns[j].track != set.patterns[i].track {
                         continue;
                     }
-                    let Body::Drums { lanes: lanes_j, .. } = pattern_bodies[j] else { continue };
+                    let Body::Drums { lanes: lanes_j, .. } = body_j else { continue };
                     let pitches: std::collections::BTreeSet<u8> =
                         lanes_i.keys().chain(lanes_j.keys()).copied().collect();
-                    let cost =
-                        pitches.iter().filter(|p| lanes_i.get(p) != lanes_j.get(p)).count();
+                    let cost = pitches.iter().filter(|p| lanes_i.get(p) != lanes_j.get(p)).count();
                     if best.is_none_or(|(c, _)| cost < c) {
                         best = Some((cost, j));
                     }
@@ -458,11 +460,11 @@ pub fn emit(q: &QSong) -> String {
             Body::Melodic { text: body_i, .. } | Body::Chordal { text: body_i, .. } => {
                 let chordal_i = matches!(pattern_bodies[i], Body::Chordal { .. });
                 let mut kin: Option<(f64, usize)> = None;
-                for j in 0..i {
+                for (j, body_j) in pattern_bodies.iter().enumerate().take(i) {
                     if set.patterns[j].track != set.patterns[i].track {
                         continue;
                     }
-                    let body_j = match pattern_bodies[j] {
+                    let body_j = match body_j {
                         Body::Melodic { text, .. } if !chordal_i => text,
                         Body::Chordal { text, .. } if chordal_i => text,
                         _ => continue,
@@ -512,8 +514,13 @@ pub fn emit(q: &QSong) -> String {
                 }
             }
             (_, Body::Drums { base, lanes }) => {
-                let _ =
-                    writeln!(out, "P{:<id_w$} {}{}", p.id, q.tracks[p.track].name, dyn_suffix(*base));
+                let _ = writeln!(
+                    out,
+                    "P{:<id_w$} {}{}",
+                    p.id,
+                    q.tracks[p.track].name,
+                    dyn_suffix(*base)
+                );
                 let _ = writeln!(out, "{}", render_lanes(&lanes_sorted(lanes)));
             }
             (_, Body::Melodic { text, .. } | Body::Chordal { text, .. }) => {
@@ -568,12 +575,12 @@ fn section_labels(
             PatternForm::Full { kin: None } => {}
         }
     }
-    let row_roots: Vec<BTreeSet<usize>> = set
-        .rows
-        .iter()
-        .map(|r| r.stack.iter().map(|id| root[id - 1]).collect())
-        .collect();
-    fn jaccard(a: &std::collections::BTreeSet<usize>, b: &std::collections::BTreeSet<usize>) -> f64 {
+    let row_roots: Vec<BTreeSet<usize>> =
+        set.rows.iter().map(|r| r.stack.iter().map(|id| root[id - 1]).collect()).collect();
+    fn jaccard(
+        a: &std::collections::BTreeSet<usize>,
+        b: &std::collections::BTreeSet<usize>,
+    ) -> f64 {
         if a.is_empty() && b.is_empty() {
             return 1.0;
         }
@@ -588,9 +595,7 @@ fn section_labels(
     // section.
     const WINDOW_BARS: u32 = 8;
     const MIN_SECTION_BARS: u32 = 4;
-    let window_union = |mut range: std::ops::Range<usize>,
-                        backwards: bool|
-     -> BTreeSet<usize> {
+    let window_union = |mut range: std::ops::Range<usize>, backwards: bool| -> BTreeSet<usize> {
         let mut acc = BTreeSet::new();
         let mut bars = 0u32;
         while !range.is_empty() && bars < WINDOW_BARS {

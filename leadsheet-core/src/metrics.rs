@@ -125,11 +125,5 @@ pub fn roundtrip(song: &RawSong, opts: &QuantizeOptions) -> Result<RoundtripRepo
     let back = ingest::ingest_midi(&midi_out, &song.name)?;
     let cell_sec = 60.0 / (quant.bpm * 4.0);
     let f1 = note_f1(song, quant.origin, &back, cell_sec * 1.001);
-    Ok(RoundtripReport {
-        quant,
-        f1,
-        text,
-        midi_out,
-        naive_bytes: naive_event_text(song).len(),
-    })
+    Ok(RoundtripReport { quant, f1, text, midi_out, naive_bytes: naive_event_text(song).len() })
 }

@@ -45,8 +45,10 @@ from the MuScriptor HF cache.
    re-derive deterministically.
 3. **Never lose data to a wrong name.** Chord symbols only when the canonical
    voicing reconstructs exactly; everything else stays explicit pitches.
-4. **Format changes get discussed first.** The format is the product;
-   syntax decisions go through Gio.
+4. **Format changes get discussed first.** The format is the product —
+   and its users are LLMs: new syntax is chosen by measured model
+   performance (bake-off process in PLAN.md), not taste. Gio arbitrates
+   scope and invariants, not spelling.
 
 ## Working notes
 

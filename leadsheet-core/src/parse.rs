@@ -75,7 +75,10 @@ fn parse_chord_cols(content: &str, cpb: u32) -> Result<Vec<ChordCol>, String> {
     let beats = (cpb / 4) as usize;
     let cols: Vec<&str> = content.split_whitespace().collect();
     if cols.len() != beats {
-        return Err(format!("chord line has {} columns, expected {beats} (1 per beat)", cols.len()));
+        return Err(format!(
+            "chord line has {} columns, expected {beats} (1 per beat)",
+            cols.len()
+        ));
     }
     let mut out = Vec::with_capacity(beats);
     let mut have_chord = false;
@@ -285,9 +288,12 @@ fn parse_kin(tok: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("expected ~P<n>, got {tok:?}"))
 }
 
+/// (prefix-token, instrument, chordal?, base vel, kin base, content).
+type MusicLine<'a> = (&'a str, &'a str, bool, u8, Option<usize>, &'a str);
+
 /// Split a `P1 bass | ... |` / `b3 piano*@mp | ... |` / `P9 piano ~P7 | ... |`
-/// line into (prefix-token, instrument, chordal?, base vel, kin base, content).
-fn split_music_line(line: &str) -> Result<(&str, &str, bool, u8, Option<usize>, &str), String> {
+/// line into its [`MusicLine`] parts.
+fn split_music_line(line: &str) -> Result<MusicLine<'_>, String> {
     let (prefix, rest) =
         line.split_once('|').ok_or_else(|| format!("expected `| ... |` in {line:?}"))?;
     let content = match rest.rfind('|') {
@@ -438,10 +444,7 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             continue;
         }
 
-        let cpb = header
-            .as_ref()
-            .map(|h| h.meter.0 * 16 / h.meter.1)
-            .unwrap_or(16);
+        let cpb = header.as_ref().map(|h| h.meter.0 * 16 / h.meter.1).unwrap_or(16);
 
         // Lane lines extend a pending drum block; anything else closes it.
         if pending.is_some() {
@@ -492,7 +495,8 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
                     for id in &ids {
                         let p = &patterns[id];
                         let track = p.track;
-                        let body = if p.bars.len() == 1 { &p.bars[0] } else { &p.bars[offset as usize] };
+                        let body =
+                            if p.bars.len() == 1 { &p.bars[0] } else { &p.bars[offset as usize] };
                         b.apply(track, (next_bar + offset) * cpb, cpb, body, p.base)
                             .map_err(|m| err(lineno, m))?;
                     }
@@ -552,7 +556,10 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
                 .get(&base_id)
                 .ok_or_else(|| err(lineno, format!("unknown variant base P{base_id}")))?;
             if base.track != ti {
-                return Err(err(lineno, format!("variant base P{base_id} is a different instrument")));
+                return Err(err(
+                    lineno,
+                    format!("variant base P{base_id} is a different instrument"),
+                ));
             }
         }
         let bars: Vec<RecBody> = content

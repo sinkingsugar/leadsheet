@@ -64,7 +64,9 @@ fn band_song(key_name: Option<&str>) -> QSong {
     }
 }
 
-fn structural(q: &QSong) -> Vec<(String, Vec<(u8, u32, u32)>)> {
+type Structural = Vec<(String, Vec<(u8, u32, u32)>)>;
+
+fn structural(q: &QSong) -> Structural {
     q.tracks
         .iter()
         .map(|t| {
@@ -212,8 +214,12 @@ fn drum_variants_emit_as_lane_diffs() {
     let text = emit::emit(&q);
     assert!(text.contains("drums ~P1"), "variant header:\n{text}");
     // The diff must contain h and O lanes but inherit K and S.
-    let variant_block: Vec<&str> =
-        text.lines().skip_while(|l| !l.contains("~P1")).skip(1).take_while(|l| l.starts_with("  ")).collect();
+    let variant_block: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.contains("~P1"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  "))
+        .collect();
     let labels: Vec<&str> =
         variant_block.iter().map(|l| l.split_whitespace().next().unwrap()).collect();
     assert_eq!(labels, ["h", "O"], "only changed lanes in diff:\n{text}");
@@ -227,9 +233,13 @@ fn melodic_kinship_is_informational() {
     let mk = |cells: &[(u8, u32)], bar: u32| -> Vec<QNote> {
         cells.iter().map(|&(p, c)| n(p, bar * 16 + c, 2)).collect()
     };
-    let mut notes = mk(&[(60, 0), (64, 2), (67, 4), (64, 6), (60, 8), (64, 10), (67, 12), (64, 14)], 0);
+    let mut notes =
+        mk(&[(60, 0), (64, 2), (67, 4), (64, 6), (60, 8), (64, 10), (67, 12), (64, 14)], 0);
     // Bar 2: same figure, one note changed.
-    notes.extend(mk(&[(60, 0), (64, 2), (67, 4), (64, 6), (60, 8), (64, 10), (69, 12), (64, 14)], 1));
+    notes.extend(mk(
+        &[(60, 0), (64, 2), (67, 4), (64, 6), (60, 8), (64, 10), (69, 12), (64, 14)],
+        1,
+    ));
     let q = QSong {
         name: "kin".into(),
         bpm: 100.0,
@@ -325,12 +335,8 @@ arrangement:
 ";
     let q = parse::parse(text).unwrap();
     let drums = &q.tracks[0];
-    let strokes: Vec<(u32, u32)> = drums
-        .notes
-        .iter()
-        .filter(|n| n.pitch == 38)
-        .map(|n| (n.cell, n.dur_cells))
-        .collect();
+    let strokes: Vec<(u32, u32)> =
+        drums.notes.iter().filter(|n| n.pitch == 38).map(|n| (n.cell, n.dur_cells)).collect();
     assert_eq!(strokes, [(4, 2), (6, 2), (12, 3), (13, 3), (14, 4), (15, 4)]);
     assert_eq!(q.n_bars, 1, "stroke counts are not extents");
     // Canonical emit reproduces the digits.

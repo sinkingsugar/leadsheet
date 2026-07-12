@@ -59,11 +59,7 @@ fn synth_song(bpm: f64, offset_sec: f64, bars: u32, jitter_ms: f64, seed: u64) -
         .flat_map(|b| {
             const CELLS: [u32; 8] = [0, 2, 3, 6, 8, 11, 12, 14];
             const PITCH: [u8; 8] = [69, 72, 74, 76, 72, 74, 69, 67];
-            CELLS
-                .iter()
-                .zip(PITCH)
-                .map(move |(&c, p)| (b * 16 + c, 2, p))
-                .collect::<Vec<_>>()
+            CELLS.iter().zip(PITCH).map(move |(&c, p)| (b * 16 + c, 2, p)).collect::<Vec<_>>()
         })
         .collect();
 
@@ -101,7 +97,8 @@ fn synth_song(bpm: f64, offset_sec: f64, bars: u32, jitter_ms: f64, seed: u64) -
 
 /// Recovered cells must equal truth up to one constant whole-bar shift.
 fn assert_grid_recovery(s: &SynthSong, bpm_expected: f64) {
-    let (q, report) = quantize(&s.song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
+    let (q, report) =
+        quantize(&s.song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
     assert_eq!(report.tempo_source, TempoSource::Inferred);
     assert!(
         (report.bpm - bpm_expected).abs() <= 1.0,
@@ -125,9 +122,9 @@ fn assert_grid_recovery(s: &SynthSong, bpm_expected: f64) {
             got_by_pitch.entry(n.pitch).or_default().push(n.cell);
         }
         for (pitch, mut tv) in true_by_pitch {
-            let mut gv = got_by_pitch.remove(&pitch).unwrap_or_else(|| {
-                panic!("pitch {pitch} missing from quantized {}", track.name)
-            });
+            let mut gv = got_by_pitch
+                .remove(&pitch)
+                .unwrap_or_else(|| panic!("pitch {pitch} missing from quantized {}", track.name));
             assert_eq!(gv.len(), tv.len(), "pitch {pitch} count ({})", track.name);
             tv.sort_unstable();
             gv.sort_unstable();
@@ -206,8 +203,7 @@ fn auto_switch_when_declared_tempo_lies() {
     assert!((report.bpm - 125.0).abs() <= 1.0, "bpm {:.2}", report.bpm);
 
     // Opt-out keeps the declared grid.
-    let (_, report) =
-        quantize(&s.song, &QuantizeOptions { no_infer: true, ..Default::default() });
+    let (_, report) = quantize(&s.song, &QuantizeOptions { no_infer: true, ..Default::default() });
     assert_eq!(report.tempo_source, TempoSource::Declared);
     assert_eq!(report.bpm, 120.0);
 
@@ -229,7 +225,12 @@ fn synth_waltz(bpm: f64, bars: u32, jitter_ms: f64, seed: u64) -> RawSong {
     for b in 0..bars {
         let base = (b * 12) as f64 * cell;
         let root: u8 = [38, 43, 45, 43][(b % 4) as usize];
-        bass.push(RawNote { pitch: root, onset: base + rng.jitter(jitter_ms), dur: 11.0 * cell, vel: 96 });
+        bass.push(RawNote {
+            pitch: root,
+            onset: base + rng.jitter(jitter_ms),
+            dur: 11.0 * cell,
+            vel: 96,
+        });
         drums.push(RawNote { pitch: 36, onset: base + rng.jitter(jitter_ms), dur: 0.08, vel: 100 });
         for beat in [4u32, 8] {
             drums.push(RawNote {
@@ -267,8 +268,7 @@ fn synth_waltz(bpm: f64, bars: u32, jitter_ms: f64, seed: u64) -> RawSong {
 #[test]
 fn detects_three_four() {
     let song = synth_waltz(140.0, 16, 8.0, 5150);
-    let (q, report) =
-        quantize(&song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
+    let (q, report) = quantize(&song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
     assert!((report.bpm - 140.0).abs() <= 1.5, "bpm {:.2}", report.bpm);
     assert_eq!(q.meter, (3, 4), "waltz must be 3/4");
     assert_eq!(q.cells_per_bar(), 12);
@@ -330,8 +330,7 @@ fn detects_six_eight() {
         source_bpm: None,
         source_meter: None,
     };
-    let (q, report) =
-        quantize(&song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
+    let (q, report) = quantize(&song, &QuantizeOptions { infer_tempo: true, ..Default::default() });
     assert_eq!(q.meter, (6, 8), "jig must be 6/8, got {:?} at {:.2}", q.meter, report.bpm);
 }
 

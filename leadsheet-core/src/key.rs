@@ -8,10 +8,8 @@ pub struct Key {
     pub minor: bool,
 }
 
-const SHARP_PC: [&str; 12] =
-    ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const FLAT_PC: [&str; 12] =
-    ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+const SHARP_PC: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const FLAT_PC: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 
 impl Key {
     /// Flat-side keys spell with flats: F, Bb, Eb, Ab, Db major and their

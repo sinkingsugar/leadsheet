@@ -174,7 +174,11 @@ fn main() -> Result<()> {
                     if t.is_drums {
                         "drums".to_string()
                     } else {
-                        format!("program {} ({})", t.program, leadsheet_core::gm::program_name(t.program))
+                        format!(
+                            "program {} ({})",
+                            t.program,
+                            leadsheet_core::gm::program_name(t.program)
+                        )
                     }
                 );
             }

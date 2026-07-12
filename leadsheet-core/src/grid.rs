@@ -180,8 +180,7 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
                     let end = snap(n.end()).max(0) as u32;
                     // Drum hits are one-shots; their length carries no
                     // information (MuScriptor emits a fixed minimum anyway).
-                    let dur_cells =
-                        if t.is_drums { 1 } else { end.saturating_sub(cell).max(1) };
+                    let dur_cells = if t.is_drums { 1 } else { end.saturating_sub(cell).max(1) };
                     max_end_cell = max_end_cell.max(cell + dur_cells);
                     QNote { pitch: n.pitch, cell, dur_cells, vel: n.vel }
                 })
@@ -191,15 +190,8 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
         })
         .collect();
 
-    let mut qsong = QSong {
-        name: song.name.clone(),
-        bpm,
-        meter,
-        key: None,
-        swing: None,
-        n_bars: 0,
-        tracks,
-    };
+    let mut qsong =
+        QSong { name: song.name.clone(), bpm, meter, key: None, swing: None, n_bars: 0, tracks };
     qsong.n_bars = max_end_cell.div_ceil(qsong.cells_per_bar());
     qsong.key = crate::key::detect(&qsong);
 

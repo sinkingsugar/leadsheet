@@ -75,7 +75,9 @@ fn structured_song() -> QSong {
     }
 }
 
-fn structural(q: &QSong) -> Vec<(String, Vec<(u8, u32, u32)>)> {
+type Structural = Vec<(String, Vec<(u8, u32, u32)>)>;
+
+fn structural(q: &QSong) -> Structural {
     q.tracks
         .iter()
         .map(|t| {
