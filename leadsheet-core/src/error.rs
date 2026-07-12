@@ -8,4 +8,6 @@ pub enum Error {
     Midi(String),
     #[error("jsonl parse: {0}")]
     Jsonl(String),
+    #[error("leadsheet parse: {0}")]
+    Parse(String),
 }

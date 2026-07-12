@@ -9,26 +9,135 @@ struct Cli {
     cmd: Cmd,
 }
 
+#[derive(clap::Args)]
+struct TempoArgs {
+    /// Infer tempo from onsets even if the file declares one.
+    #[arg(long)]
+    infer_tempo: bool,
+    /// Force this BPM (phase/downbeat still estimated).
+    #[arg(long)]
+    bpm: Option<f64>,
+}
+
+impl TempoArgs {
+    fn options(&self) -> leadsheet_core::grid::QuantizeOptions {
+        leadsheet_core::grid::QuantizeOptions {
+            bpm_override: self.bpm,
+            infer_tempo: self.infer_tempo,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Ingest a .mid or MuScriptor .jsonl and print what was understood,
     /// including the tempo/grid the compressor would use.
     Inspect {
         input: PathBuf,
-        /// Infer tempo from onsets even if the file declares one.
+        #[command(flatten)]
+        tempo: TempoArgs,
+    },
+    /// Compress .mid / MuScriptor .jsonl into leadsheet text.
+    Compress {
+        input: PathBuf,
+        /// Output path (default: input with .ls extension; `-` for stdout).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[command(flatten)]
+        tempo: TempoArgs,
+    },
+    /// Render leadsheet text back to a standard MIDI file.
+    Render {
+        input: PathBuf,
+        /// Output path (default: input with .mid extension).
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// compress → render → re-ingest → note F1 + compression ratio.
+    Roundtrip {
+        input: PathBuf,
+        /// Also write the intermediate .ls text here.
         #[arg(long)]
-        infer_tempo: bool,
-        /// Force this BPM (phase/downbeat still estimated).
-        #[arg(long)]
-        bpm: Option<f64>,
+        keep_text: Option<PathBuf>,
+        #[command(flatten)]
+        tempo: TempoArgs,
     },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Inspect { input, infer_tempo, bpm } => {
+        Cmd::Compress { input, output, tempo } => {
             let song = leadsheet_core::ingest::ingest_path(&input)?;
+            let (qsong, report) = leadsheet_core::grid::quantize(&song, &tempo.options());
+            let text = leadsheet_core::emit::emit(&qsong);
+            let naive = leadsheet_core::metrics::naive_event_text(&song).len();
+            let out_path = output.unwrap_or_else(|| input.with_extension("ls"));
+            if out_path.as_os_str() == "-" {
+                print!("{text}");
+            } else {
+                std::fs::write(&out_path, &text)?;
+                eprintln!("wrote {}", out_path.display());
+            }
+            eprintln!(
+                "tempo {:.2} BPM ({:?}), {} bars, {} notes; {} bytes ({:.1}x vs naive event list)",
+                report.bpm,
+                report.tempo_source,
+                qsong.n_bars,
+                report.note_count,
+                text.len(),
+                naive as f64 / text.len().max(1) as f64,
+            );
+        }
+        Cmd::Render { input, output } => {
+            let text = std::fs::read_to_string(&input)?;
+            let qsong = leadsheet_core::parse::parse(&text)?;
+            let bytes = leadsheet_core::render::render(&qsong);
+            let out_path = output.unwrap_or_else(|| input.with_extension("mid"));
+            std::fs::write(&out_path, &bytes)?;
+            eprintln!(
+                "wrote {} ({:.2} BPM, {} bars, {} tracks)",
+                out_path.display(),
+                qsong.bpm,
+                qsong.n_bars,
+                qsong.tracks.len()
+            );
+        }
+        Cmd::Roundtrip { input, keep_text, tempo } => {
+            let song = leadsheet_core::ingest::ingest_path(&input)?;
+            let report = leadsheet_core::metrics::roundtrip(&song, &tempo.options())?;
+            if let Some(path) = keep_text {
+                std::fs::write(&path, &report.text)?;
+                eprintln!("wrote {}", path.display());
+            }
+            println!(
+                "tempo     {:.2} BPM ({:?}), origin {:+.3} s",
+                report.quant.bpm, report.quant.tempo_source, report.quant.origin
+            );
+            println!(
+                "notes     {} in, {} out, {} matched",
+                report.f1.ref_count, report.f1.hyp_count, report.f1.matched
+            );
+            println!(
+                "F1        {:.4}  (precision {:.4}, recall {:.4})",
+                report.f1.f1(),
+                report.f1.precision(),
+                report.f1.recall()
+            );
+            println!(
+                "size      {} bytes text vs {} naive ({:.1}x)",
+                report.ls_bytes(),
+                report.naive_bytes,
+                report.ratio_vs_naive()
+            );
+            if report.f1.f1() < 0.95 {
+                eprintln!("WARN: F1 below 0.95 target");
+                std::process::exit(1);
+            }
+        }
+        Cmd::Inspect { input, tempo } => {
+            let song = leadsheet_core::ingest::ingest_path(&input)?;
+            let (infer_tempo, bpm) = (tempo.infer_tempo, tempo.bpm);
             println!("song: {}", song.name);
             match song.source_bpm {
                 Some(bpm) => println!("source tempo: {bpm:.2} BPM (declared, constant)"),
