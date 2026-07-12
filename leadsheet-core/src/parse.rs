@@ -476,6 +476,13 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         // Lane lines extend a pending drum block; anything else closes it.
         if let Some(block) = &mut pending {
             if let Some((pitch, content)) = try_lane_line(line) {
+                if block.lanes.iter().any(|(p, _)| *p == pitch) {
+                    return Err(err(raw(
+                        "duplicate-lane",
+                        format!("duplicate drum lane {:?}", drums::lane_label(pitch)),
+                    )
+                    .hint("each lane appears once per block — merge the hits into one line")));
+                }
                 let cells = parse_lane_cells(content, cpb).map_err(err)?;
                 block.lanes.push((pitch, cells));
                 continue;
@@ -814,6 +821,13 @@ fn parse_header_line(
         if !bpm.is_finite() || bpm <= 0.0 {
             return Err(raw("bad-tempo", format!("bad tempo {bpm}")).at(bpm_tok));
         }
+        // MIDI tempo is 24-bit µs/quarter: rejecting the unrepresentable
+        // here beats silently clamping it at render time.
+        if !(1.0..=16_777_215.0).contains(&(60e6 / bpm)) {
+            return Err(raw("bad-tempo", format!("tempo {bpm} is not MIDI-representable"))
+                .hint("MIDI tempo is 24-bit microseconds per beat: roughly 3.6 to 60000000 BPM")
+                .at(bpm_tok));
+        }
         *header = Some(Header { name, bpm, meter, key, swing });
         return Ok(());
     }
@@ -835,6 +849,14 @@ fn parse_header_line(
                     false,
                 )
             };
+            if !crate::doc::valid_name(name) {
+                return Err(raw(
+                    "bad-instrument",
+                    format!("instrument name {name:?} (use letters, digits, _ or -)"),
+                )
+                .hint(INST_HINT)
+                .at(field));
+            }
             if track_index.contains_key(name) {
                 return Err(
                     raw("duplicate-instrument", format!("duplicate instrument {name:?}")).at(name)

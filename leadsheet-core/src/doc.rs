@@ -173,17 +173,21 @@ impl Document {
     /// output is valid by construction). Checks everything emission and
     /// resolution assume: reference integrity, bar sums, lane shapes,
     /// and header sanity — including that text fields can't break the
-    /// emitted syntax (decision B3).
+    /// emitted syntax (decision B3: names are whitelisted, labels can't
+    /// carry structural characters). The contract this enforces is the
+    /// `document_canonicality` property: a Document that validates emits
+    /// text that reparses and resolves to the same music.
     pub fn validate(&self) -> Result<(), Error> {
         validate_header(&self.header)?;
         let cpb = self.header.cells_per_bar();
         let bar = self.header.bar_ticks();
         let mut names = std::collections::HashSet::new();
         for i in &self.instruments {
-            if i.name.is_empty()
-                || i.name.contains(|c: char| c.is_whitespace() || "::@*|~".contains(c))
-            {
-                return Err(doc_err(format!("instrument name {:?} would break emission", i.name)));
+            if !valid_name(&i.name) {
+                return Err(doc_err(format!(
+                    "instrument name {:?} would break emission (use letters, digits, _ or -)",
+                    i.name
+                )));
             }
             if !names.insert(&i.name) {
                 return Err(doc_err(format!("duplicate instrument {:?}", i.name)));
@@ -201,12 +205,25 @@ impl Document {
             if matches!(p.body, PatternBody::Drums(_)) != is_drums {
                 return Err(doc_err(format!("P{}: body kind does not match the instrument", p.id)));
             }
-            if let Some(kin) = p.kin
-                && !self.patterns[..idx].iter().any(|q| q.id == kin)
-            {
-                return Err(doc_err(format!("P{}: kin P{kin} is not defined earlier", p.id)));
+            validate_base_vel(p.base_vel, &format!("P{}", p.id))?;
+            if let Some(kin) = p.kin {
+                // Kinship is spelled on the pattern's name field; drums
+                // spell variant bases there instead, so a drums `kin`
+                // would be silently dropped by emission.
+                if is_drums {
+                    return Err(doc_err(format!(
+                        "P{}: drum patterns carry their base in variant_base, not kin",
+                        p.id
+                    )));
+                }
+                if !self.patterns[..idx].iter().any(|q| q.id == kin && q.track == p.track) {
+                    return Err(doc_err(format!(
+                        "P{}: kin P{kin} is not an earlier pattern on the same instrument",
+                        p.id
+                    )));
+                }
             }
-            validate_body(&p.body, cpb, bar, &self.patterns[..idx], format!("P{}", p.id))?;
+            validate_body(&p.body, cpb, bar, &self.patterns[..idx], p.track, format!("P{}", p.id))?;
         }
         let mut total_bars = 0u64;
         for item in &self.timeline {
@@ -215,8 +232,15 @@ impl Document {
                     if row.reps == 0 {
                         return Err(doc_err("row repeats must be >= 1".into()));
                     }
+                    // What actually breaks the emitted row line: `[`
+                    // ends the label early, `|` reroutes the line as a
+                    // music line, a leading `#` turns it into a comment,
+                    // and surrounding whitespace doesn't survive the
+                    // reparse trim. (`]` before the `[` is harmless.)
                     if let Some(l) = &row.label
-                        && l.contains(['\n', '[', ']'])
+                        && (l.contains(['\n', '[', '|'])
+                            || l.starts_with('#')
+                            || l.trim() != l.as_str())
                     {
                         return Err(doc_err(format!("row label {l:?} would break emission")));
                     }
@@ -251,7 +275,15 @@ impl Document {
                             d.bar
                         )));
                     }
-                    validate_body(&d.body, cpb, bar, &self.patterns, format!("b{}", d.bar))?;
+                    validate_base_vel(d.base_vel, &format!("b{}", d.bar))?;
+                    validate_body(
+                        &d.body,
+                        cpb,
+                        bar,
+                        &self.patterns,
+                        d.track,
+                        format!("b{}", d.bar),
+                    )?;
                     total_bars = total_bars.max(d.bar as u64 + d.body.n_bars() as u64 - 1);
                 }
             }
@@ -264,10 +296,13 @@ impl Document {
 
     /// Compile to a flat, tick-placed [`QSong`].
     ///
-    /// Documents built by [`crate::parse::parse_document`] are already
-    /// validated with line-accurate diagnostics; the checks here guard
-    /// hand-built Documents (hosts, wasm callers) and carry no line info.
+    /// Runs [`Document::validate`] first, so hand-built Documents (hosts,
+    /// wasm callers) get a structured error instead of a panic on
+    /// malformed state. Documents from [`crate::parse::parse_document`]
+    /// are already valid with line-accurate diagnostics and pay a
+    /// negligible re-check.
     pub fn resolve(&self) -> Result<QSong, Error> {
+        self.validate()?;
         let cpb = self.header.cells_per_bar();
         let bar_len = self.header.bar_ticks();
         let mut b = Builder {
@@ -400,9 +435,10 @@ fn merge_variant_lanes(
 
 impl QSong {
     /// Structural preflight for host-built songs (quantizer/resolver
-    /// output is valid by construction): header sanity, positive
-    /// durations, drum hits on the 16th grid with stroke digits 1..=4,
-    /// and no notes beyond `n_bars` (emission silently drops those).
+    /// output is valid by construction): header sanity, emittable unique
+    /// track names, MIDI-range pitches, positive durations, drum hits on
+    /// the 16th grid with stroke digits 1..=4, and no notes beyond
+    /// `n_bars` (emission silently drops those).
     pub fn validate(&self) -> Result<(), Error> {
         validate_header(&Header {
             name: self.name.clone(),
@@ -411,9 +447,22 @@ impl QSong {
             key: self.key,
             swing: self.swing,
         })?;
+        let mut names = std::collections::HashSet::new();
         let end = self.bar_ticks() * self.n_bars as i64;
         for t in &self.tracks {
+            if !valid_name(&t.name) {
+                return Err(doc_err(format!(
+                    "track name {:?} would break emission (use letters, digits, _ or -)",
+                    t.name
+                )));
+            }
+            if !names.insert(&t.name) {
+                return Err(doc_err(format!("duplicate track {:?}", t.name)));
+            }
             for n in &t.notes {
+                if n.pitch > 127 {
+                    return Err(doc_err(format!("{}: pitch {} beyond MIDI 127", t.name, n.pitch)));
+                }
                 if n.dur <= MusicalTime::ZERO || n.onset < MusicalTime::ZERO {
                     return Err(doc_err(format!("{}: non-positive time on a note", t.name)));
                 }
@@ -440,6 +489,24 @@ impl QSong {
     }
 }
 
+/// The name whitelist (decision B3): the only instrument/track names that
+/// survive the emit → parse loop unambiguously. Shared by both validation
+/// boundaries and the parser so the three can't drift.
+pub(crate) fn valid_name(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// `@dyn` marks only spell the six dynamic buckets, so an off-bucket base
+/// would silently shift every velocity through a reparse.
+fn validate_base_vel(base: u8, who: &str) -> Result<(), Error> {
+    if !notation::DYNAMICS.iter().any(|(_, v)| *v == base) {
+        return Err(doc_err(format!(
+            "{who}: base velocity {base} is not a dynamic bucket (32/48/64/80/96/112)"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_header(h: &Header) -> Result<(), Error> {
     if !h.bpm.is_finite() || h.bpm <= 0.0 {
         return Err(doc_err(format!("bad tempo {}", h.bpm)));
@@ -460,7 +527,7 @@ fn validate_header(h: &Header) -> Result<(), Error> {
     {
         return Err(doc_err("bad swing (level 8/16, percent 50..=75)".into()));
     }
-    if h.name.contains("tempo:") || h.name.contains('\n') {
+    if h.name.contains("tempo:") || h.name.contains('\n') || h.name.trim() != h.name {
         return Err(doc_err(format!("song name {:?} would break emission", h.name)));
     }
     Ok(())
@@ -471,6 +538,7 @@ fn validate_body(
     cpb: u32,
     bar: MusicalTime,
     earlier: &[PatternDef],
+    track: usize,
     who: String,
 ) -> Result<(), Error> {
     match body {
@@ -526,15 +594,29 @@ fn validate_body(
         }
         PatternBody::Drums(d) => {
             if let Some(base) = d.variant_base {
-                let ok =
-                    earlier.iter().any(|p| p.id == base && matches!(p.body, PatternBody::Drums(_)));
+                // Same-instrument, like the parser: a variant inherits
+                // lanes, so base and variant must share a kit.
+                let ok = earlier.iter().any(|p| {
+                    p.id == base && p.track == track && matches!(p.body, PatternBody::Drums(_))
+                });
                 if !ok {
                     return Err(doc_err(format!(
-                        "{who}: variant base P{base} is not an earlier drum pattern"
+                        "{who}: variant base P{base} is not an earlier drum pattern on the same \
+                         instrument"
                     )));
                 }
             }
-            for (_, cells) in &d.lanes {
+            let mut lane_pitches = std::collections::HashSet::new();
+            for (pitch, cells) in &d.lanes {
+                if *pitch > 127 {
+                    return Err(doc_err(format!("{who}: lane pitch {pitch} beyond MIDI 127")));
+                }
+                if !lane_pitches.insert(*pitch) {
+                    return Err(doc_err(format!(
+                        "{who}: duplicate lane {}",
+                        crate::drums::lane_label(*pitch)
+                    )));
+                }
                 if cells.len() != cpb as usize {
                     return Err(doc_err(format!(
                         "{who}: lane has {} cells, expected {cpb}",
@@ -554,18 +636,63 @@ fn validate_tok(tok: &Tok, who: &str) -> Result<(), Error> {
     if tok.dur() <= MusicalTime::ZERO {
         return Err(doc_err(format!("{who}: non-positive duration")));
     }
-    if let Tok::Tuplet { n, members, .. } = tok {
+    validate_pitches(tok, who)?;
+    if let Tok::Tuplet { n, members, span, tie } = tok {
         if !(2..=24).contains(n) || members.len() != *n as usize {
             return Err(doc_err(format!("{who}: malformed tuplet")));
         }
-        if members.iter().any(|m| matches!(m, Tok::Tuplet { .. })) {
-            return Err(doc_err(format!("{who}: tuplets cannot nest")));
+        // Parse-canonical member shape: a shorter span would silently
+        // drop members at placement, a member tie is emitter-
+        // unrepresentable (ties live on the group), member durations
+        // must agree with the placement boundaries, and a tied group
+        // cannot end in a rest.
+        if span.ticks() < *n as i64 {
+            return Err(doc_err(format!("{who}: tuplet span is shorter than its {n} members")));
+        }
+        if *tie && matches!(members.last(), Some(Tok::Rest { .. })) {
+            return Err(doc_err(format!("{who}: a tuplet ending in a rest cannot be tied")));
+        }
+        for (i, m) in members.iter().enumerate() {
+            let want = notation::tuplet_boundary(*span, *n, i as u32 + 1)
+                - notation::tuplet_boundary(*span, *n, i as u32);
+            let (dur, member_tie) = match m {
+                Tok::Note { dur, tie, .. } | Tok::Chord { dur, tie, .. } => (*dur, *tie),
+                Tok::Rest { dur } => (*dur, false),
+                Tok::Tuplet { .. } => {
+                    return Err(doc_err(format!("{who}: tuplets cannot nest")));
+                }
+            };
+            if member_tie {
+                return Err(doc_err(format!("{who}: ties go on the tuplet group, not a member")));
+            }
+            if dur != want {
+                return Err(doc_err(format!(
+                    "{who}: tuplet member {i} carries {} ticks, the boundary rule says {}",
+                    dur.ticks(),
+                    want.ticks()
+                )));
+            }
+            validate_pitches(m, who)?;
         }
     }
     if let Tok::Chord { pitches, .. } = tok
         && pitches.is_empty()
     {
         return Err(doc_err(format!("{who}: empty chord")));
+    }
+    Ok(())
+}
+
+/// Pitches beyond MIDI 127 spell to text [`crate::notation::parse_pitch`]
+/// rejects: validated Document, unparseable emission.
+fn validate_pitches(tok: &Tok, who: &str) -> Result<(), Error> {
+    let bad = match tok {
+        Tok::Note { pitch, .. } => *pitch > 127,
+        Tok::Chord { pitches, .. } => pitches.iter().any(|p| *p > 127),
+        _ => false,
+    };
+    if bad {
+        return Err(doc_err(format!("{who}: pitch beyond MIDI 127")));
     }
     Ok(())
 }
@@ -720,8 +847,14 @@ impl Builder {
                 for (i, m) in members.iter().enumerate() {
                     let at = cursor + boundary(i as u32);
                     let dur = boundary(i as u32 + 1) - boundary(i as u32);
+                    // validate() requires span >= n, which makes every
+                    // boundary step positive — a zero-width member here
+                    // would be silent data loss, our one forbidden thing.
                     if dur <= MusicalTime::ZERO {
-                        continue; // degenerate span smaller than the arity
+                        return Err(doc_err(format!(
+                            "tuplet member collapsed to zero width (span {} / {n})",
+                            span.ticks()
+                        )));
                     }
                     let last = i + 1 == members.len();
                     match m {

@@ -157,17 +157,28 @@ fn generous_but_bounded() {
     assert_eq!(parse::parse(odd_meter).unwrap().meter, (15, 8));
 }
 
-/// Parser-valid extremes must render without panicking (B3: MIDI tempo is
-/// a 24-bit µs/quarter field — unrepresentable BPMs clamp).
+/// MIDI tempo is a 24-bit µs/quarter field: representable extremes render
+/// cleanly, unrepresentable ones are a clean parse-time `bad-tempo` — not
+/// a silent render-time clamp that changes the music without saying so.
 #[test]
 fn extreme_tempo_and_meter_render_cleanly() {
-    for tempo in ["0.0001", "0.001", "1000000", "3.5"] {
+    for (tempo, representable) in
+        [("0.0001", false), ("0.001", false), ("1000000", true), ("3.5", false), ("3.6", true)]
+    {
         let text = format!(
             "# song: x  tempo: {tempo}  meter: 4/4  grid: 1/16\n# instruments: p:0\nb1 p | C16 |\n"
         );
-        let q = parse::parse(&text).unwrap();
-        let midi = leadsheet_core::render::render(&q);
-        assert!(ingest::ingest_midi(&midi, "x").is_ok(), "tempo {tempo}");
+        match parse::parse(&text) {
+            Ok(q) => {
+                assert!(representable, "tempo {tempo} must be rejected as unrepresentable");
+                let midi = leadsheet_core::render::render(&q);
+                assert!(ingest::ingest_midi(&midi, "x").is_ok(), "tempo {tempo}");
+            }
+            Err(e) => {
+                assert!(!representable, "tempo {tempo} must parse: {e}");
+                assert_eq!(e.diagnostic().unwrap().code, "bad-tempo", "{e}");
+            }
+        }
     }
     let text =
         "# song: x  tempo: 120  meter: 64/8  grid: 1/16\n# instruments: p:0\nb1 p | z128 |\n";

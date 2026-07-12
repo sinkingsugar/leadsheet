@@ -200,3 +200,25 @@ fn trailing_row_junk_is_an_error() {
     assert!(d.message.contains("garbage"), "{d}");
     assert!(d.col > 0, "{d}");
 }
+
+#[test]
+fn duplicate_drum_lane_is_an_error() {
+    // Two K lines in one block used to double-place every hit silently.
+    let text = format!("{HEAD}b1 drums\n  K |x... .... x... ....|\n  K |.... x... .... x...|\n");
+    let d = expect(&text, "duplicate-lane", 5, "one line");
+    assert!(d.message.contains("\"K\""), "{d}");
+}
+
+#[test]
+fn instrument_names_are_whitelisted() {
+    // '[' would reroute lines referencing the instrument as arrangement
+    // rows; '#' would comment out an emitted drum opener. The whitelist
+    // (letters, digits, _ -) closes the whole class.
+    for name in ["a[b", "#x", "a.b"] {
+        let d = diag_of(&format!(
+            "# song: x  tempo: 120  grid: 1/16\n# instruments: {name}:0\nb1 {name} | C16 |\n"
+        ));
+        assert_eq!(d.code, "bad-instrument", "{name:?}: {d}");
+        assert_eq!(d.line, 2, "{d}");
+    }
+}

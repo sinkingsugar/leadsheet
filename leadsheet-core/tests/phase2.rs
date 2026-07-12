@@ -149,6 +149,153 @@ fn validate_rejects_host_built_mistakes() {
     assert!(q.validate().is_err());
 }
 
+/// Triage-2 boundary holes (A2/A3/B1–B6): every host-built state that
+/// used to slip through validate() and lose or mutate music downstream
+/// is now a structured error — and resolve() itself validates, so none
+/// of them can panic either.
+#[test]
+fn validate_closes_the_triage_2_holes() {
+    use leadsheet_core::notation::{Mark, Tok};
+    let good = doc(AUTHOR);
+
+    // A2: resolve() validates first — a division-by-zero meter is an
+    // Err, not a panic.
+    let mut d = good.clone();
+    d.header.meter = (4, 0);
+    assert!(d.resolve().is_err());
+
+    // B1: an off-bucket base velocity would silently shift through the
+    // @dyn reparse (70 emits @mp, reparses 64).
+    let mut d = good.clone();
+    d.patterns[1].base_vel = 70;
+    assert!(d.validate().is_err());
+
+    // A3: a tuplet span shorter than its arity drops members at
+    // placement; B2: member ties and off-boundary member durations are
+    // emitter-unrepresentable.
+    let bar_rest = |ticks: i64| Tok::Rest { dur: MusicalTime(ticks) };
+    let tuplet = |span: i64, middle_tie: bool, bad_dur: bool| {
+        let span = MusicalTime(span);
+        let members = (0..3u32)
+            .map(|i| {
+                let mut dur = leadsheet_core::notation::tuplet_boundary(span, 3, i + 1)
+                    - leadsheet_core::notation::tuplet_boundary(span, 3, i);
+                if bad_dur && i == 2 {
+                    dur += MusicalTime(1);
+                }
+                Tok::Note { pitch: 60, dur, tie: middle_tie && i == 1, mark: Mark::None }
+            })
+            .collect();
+        Tok::Tuplet { n: 3, members, span, tie: false }
+    };
+    let with_voice = |toks: Vec<Tok>| {
+        let mut d = good.clone();
+        d.patterns[1].body =
+            PatternBody::Melodic(vec![leadsheet_core::doc::MelodicBar { voices: vec![toks] }]);
+        d
+    };
+    let bar = good.header.bar_ticks().ticks();
+    assert!(with_voice(vec![tuplet(2, false, false), bar_rest(bar - 2)]).validate().is_err());
+    assert!(with_voice(vec![tuplet(960, true, false), bar_rest(bar - 960)]).validate().is_err());
+    // An off-boundary member dur changes the group total; keep the bar
+    // sum right so the member check itself is what fires.
+    assert!(with_voice(vec![tuplet(960, false, true), bar_rest(bar - 961)]).validate().is_err());
+    assert!(with_voice(vec![tuplet(960, false, false), bar_rest(bar - 960)]).validate().is_ok());
+
+    // B4: pitches beyond MIDI 127 spell to text parse_pitch rejects.
+    let d = with_voice(vec![Tok::Note {
+        pitch: 200,
+        dur: MusicalTime(bar),
+        tie: false,
+        mark: Mark::None,
+    }]);
+    assert!(d.validate().is_err());
+
+    // B6: duplicate lanes in one body double-place notes.
+    let mut d = good.clone();
+    if let PatternBody::Drums(db) = &mut d.patterns[2].body {
+        let dup = db.lanes[0].clone();
+        db.lanes.push(dup);
+    }
+    assert!(d.validate().is_err());
+
+    // B6: kin must live on the same instrument (P7 is the piano).
+    let mut d = good.clone();
+    d.patterns[1].kin = Some(7);
+    assert!(d.validate().is_err());
+
+    // B6: drums carry their base in variant_base, never kin.
+    let mut d = good.clone();
+    d.patterns[3].kin = Some(10);
+    assert!(d.validate().is_err());
+
+    // B6: a variant base must be an earlier drum pattern on the same kit.
+    let mut d = good.clone();
+    if let PatternBody::Drums(db) = &mut d.patterns[3].body {
+        db.variant_base = Some(7);
+    }
+    assert!(d.validate().is_err());
+
+    // B3: labels that would reroute or comment out the emitted row line.
+    for label in ["a|b", " x", "#x"] {
+        let mut d = good.clone();
+        let row = d
+            .timeline
+            .iter_mut()
+            .find_map(|i| match i {
+                TimelineItem::Row(r) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        row.label = Some(label.into());
+        assert!(d.validate().is_err(), "label {label:?} must be rejected");
+    }
+
+    // B3: instrument names are whitelisted now ('[' would reroute a
+    // pattern line as an arrangement row, '#' a drum opener as a comment).
+    for name in ["a[b", "#x", "a b", ""] {
+        let mut d = good.clone();
+        d.instruments[0].name = name.into();
+        assert!(d.validate().is_err(), "instrument {name:?} must be rejected");
+    }
+
+    // Song names that don't survive the reparse trim.
+    let mut d = good.clone();
+    d.header.name = " x".into();
+    assert!(d.validate().is_err());
+
+    // B5: QSong::validate now shares the name rules and checks pitches.
+    let q = good.resolve().unwrap();
+    let mut bad = q.clone();
+    bad.tracks[1].name = bad.tracks[0].name.clone();
+    assert!(bad.validate().is_err(), "duplicate track names");
+    let mut bad = q.clone();
+    bad.tracks[0].name = "a b".into();
+    assert!(bad.validate().is_err(), "whitelisted track names");
+    let mut bad = q.clone();
+    bad.tracks[0].notes[0].pitch = 200;
+    assert!(bad.validate().is_err(), "MIDI pitch range");
+}
+
+/// The flip side of the label rules: odd-but-harmless labels (']' or ':'
+/// before the '[' never confuse the row parser) stay legal and survive
+/// the canonical loop.
+#[test]
+fn odd_but_legal_labels_roundtrip() {
+    let text = "\
+# song: l  tempo: 100.00  meter: 4/4  grid: 1/16
+# instruments: p:0
+P1 p | C16 |
+
+arrangement:
+  a]b c: [P1]
+";
+    let d = doc(text);
+    d.validate().expect("']' and inner spaces are harmless in labels");
+    let emitted = emit::emit_document(&d);
+    assert_eq!(doc(&emitted), d, "label survives the loop:\n{emitted}");
+}
+
 /// A1: the diff contract is "empty = semantically identical", and
 /// timeline *order* is semantic (the E6 joined/split pair compiles to
 /// different QSongs). Reordering rows and directs must never diff empty.
