@@ -30,7 +30,7 @@ MIDI renders at 960 PPQ. Next: the tuplet/32nd syntax bake-off (3b).
 | Where | What |
 |---|---|
 | `FORMAT.md` | **The format spec.** Paste it alongside a `.ls` when prompting an LLM. |
-| `PLAN.md` | Scope charter + phased roadmap (Phase 1 done, 3a next). |
+| `PLAN.md` | Scope charter + phased roadmap (Phases 1 and 3a done; 3b bake-off next). |
 | `corpus/` | Golden fixtures: compress output is byte-locked by `tests/corpus.rs`. |
 | `leadsheet-core/` | Library. `ingest` (.mid + MuScriptor jsonl) → `tempo`/`grid` (beat inference, quantization) → `chord`/`key`/`drums`/`notation` (semantics) → `pattern`/`emit` (text out) and `parse`/`render` (text in → MIDI). `metrics` is the oracle. |
 | `leadsheet-cli/` | `leadsheet compress | render | roundtrip | inspect | check | fmt` |
