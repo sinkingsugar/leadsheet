@@ -156,20 +156,25 @@ fn try_chordal(segs: &[Seg], cells_per_bar: u32, flats: bool) -> Option<String> 
     Some(cols.join(" "))
 }
 
-/// Drum step-grid lanes, one per GM voice, cells grouped by beat.
-fn drum_lanes(segs: &[Seg], cells_per_bar: u32) -> String {
-    let mut lanes: BTreeMap<u8, Vec<bool>> = BTreeMap::new();
+type Lanes = BTreeMap<u8, Vec<bool>>;
+
+/// Drum step-grid: one boolean lane per GM voice.
+fn drum_lane_map(segs: &[Seg], cells_per_bar: u32) -> Lanes {
+    let mut lanes: Lanes = BTreeMap::new();
     for s in segs {
         lanes.entry(s.pitch).or_insert_with(|| vec![false; cells_per_bar as usize])
             [s.cell as usize] = true;
     }
-    let mut order: Vec<u8> = lanes.keys().copied().collect();
-    order.sort_by_key(|p| drums::lane_order(*p));
-    let label_w = order.iter().map(|p| drums::lane_label(*p).len()).max().unwrap_or(1);
-    order
+    lanes
+}
+
+/// Render lanes as tab lines, cells grouped by beat.
+fn render_lanes(entries: &[(u8, Vec<bool>)]) -> String {
+    let label_w =
+        entries.iter().map(|(p, _)| drums::lane_label(*p).len()).max().unwrap_or(1);
+    entries
         .iter()
-        .map(|pitch| {
-            let cells = &lanes[pitch];
+        .map(|(pitch, cells)| {
             let mut grid = String::new();
             for (i, hit) in cells.iter().enumerate() {
                 if i > 0 && i % 4 == 0 {
@@ -183,11 +188,18 @@ fn drum_lanes(segs: &[Seg], cells_per_bar: u32) -> String {
         .join("\n")
 }
 
+fn lanes_sorted(lanes: &Lanes) -> Vec<(u8, Vec<bool>)> {
+    let mut entries: Vec<(u8, Vec<bool>)> =
+        lanes.iter().map(|(p, c)| (*p, c.clone())).collect();
+    entries.sort_by_key(|(p, _)| drums::lane_order(*p));
+    entries
+}
+
 /// One bar's emitted form.
 enum Body {
     Melodic(String),
     Chordal(String),
-    Drums(String),
+    Drums(Lanes),
 }
 
 impl Body {
@@ -197,9 +209,50 @@ impl Body {
         match self {
             Body::Melodic(s) => format!("m:{s}"),
             Body::Chordal(s) => format!("c:{s}"),
-            Body::Drums(s) => format!("d:{s}"),
+            Body::Drums(lanes) => {
+                let mut s = String::from("d:");
+                for (pitch, cells) in lanes {
+                    s.push_str(&pitch.to_string());
+                    s.push('=');
+                    s.extend(cells.iter().map(|c| if *c { 'x' } else { '.' }));
+                    s.push(';');
+                }
+                s
+            }
         }
     }
+}
+
+/// Token-multiset overlap in [0, 1] for melodic/chordal kinship.
+fn body_similarity(a: &str, b: &str) -> f64 {
+    let ta: Vec<&str> = a.split_whitespace().collect();
+    let tb: Vec<&str> = b.split_whitespace().collect();
+    if ta.is_empty() && tb.is_empty() {
+        return 1.0;
+    }
+    let mut counts: std::collections::HashMap<&str, i32> = Default::default();
+    for t in &ta {
+        *counts.entry(t).or_default() += 1;
+    }
+    let mut common = 0usize;
+    for t in &tb {
+        let c = counts.entry(t).or_default();
+        if *c > 0 {
+            *c -= 1;
+            common += 1;
+        }
+    }
+    2.0 * common as f64 / (ta.len() + tb.len()) as f64
+}
+
+const KINSHIP_THRESHOLD: f64 = 0.6;
+
+/// How each pattern gets written: possibly as a variant of an earlier one.
+enum PatternForm {
+    Full { kin: Option<usize> },
+    /// Drums only: base pattern index + the lanes that differ from it
+    /// (a lane cleared relative to the base appears as all dots).
+    DrumsDiff { base: usize, lanes: Vec<(u8, Vec<bool>)> },
 }
 
 fn instrument_field(t: &QTrack) -> String {
@@ -237,7 +290,7 @@ pub fn emit(q: &QSong) -> String {
                         return None;
                     }
                     Some(if t.is_drums {
-                        Body::Drums(drum_lanes(segs, cpb))
+                        Body::Drums(drum_lane_map(segs, cpb))
                     } else if let Some(c) = try_chordal(segs, cpb, flats) {
                         Body::Chordal(c)
                     } else {
@@ -254,26 +307,117 @@ pub fn emit(q: &QSong) -> String {
         .collect();
     let set = pattern::build(&keys);
 
+    // Resolve each pattern back to its Body (first occurrence of its key).
+    let pattern_bodies: Vec<&Body> = set
+        .patterns
+        .iter()
+        .map(|p| {
+            let bar = keys[p.track]
+                .iter()
+                .position(|k| k.as_deref() == Some(p.body.as_str()))
+                .expect("pattern came from these bodies");
+            bodies[p.track][bar].as_ref().unwrap()
+        })
+        .collect();
+
+    // Variant planning: best earlier same-track same-kind pattern.
+    let forms: Vec<PatternForm> = (0..set.patterns.len())
+        .map(|i| match pattern_bodies[i] {
+            Body::Drums(lanes_i) => {
+                let mut best: Option<(usize, usize)> = None; // (cost, base)
+                for j in 0..i {
+                    if set.patterns[j].track != set.patterns[i].track {
+                        continue;
+                    }
+                    let Body::Drums(lanes_j) = pattern_bodies[j] else { continue };
+                    let pitches: std::collections::BTreeSet<u8> =
+                        lanes_i.keys().chain(lanes_j.keys()).copied().collect();
+                    let cost =
+                        pitches.iter().filter(|p| lanes_i.get(p) != lanes_j.get(p)).count();
+                    if best.is_none_or(|(c, _)| cost < c) {
+                        best = Some((cost, j));
+                    }
+                }
+                match best {
+                    Some((cost, base)) if cost < lanes_i.len() => {
+                        let Body::Drums(base_lanes) = pattern_bodies[base] else { unreachable!() };
+                        let cpb = q.cells_per_bar() as usize;
+                        let mut diff: Vec<(u8, Vec<bool>)> = Vec::new();
+                        let pitches: std::collections::BTreeSet<u8> =
+                            lanes_i.keys().chain(base_lanes.keys()).copied().collect();
+                        for pitch in pitches {
+                            if lanes_i.get(&pitch) != base_lanes.get(&pitch) {
+                                let cells = lanes_i
+                                    .get(&pitch)
+                                    .cloned()
+                                    .unwrap_or_else(|| vec![false; cpb]); // cleared lane
+                                diff.push((pitch, cells));
+                            }
+                        }
+                        diff.sort_by_key(|(p, _)| drums::lane_order(*p));
+                        PatternForm::DrumsDiff { base, lanes: diff }
+                    }
+                    _ => PatternForm::Full { kin: None },
+                }
+            }
+            Body::Melodic(body_i) | Body::Chordal(body_i) => {
+                let chordal_i = matches!(pattern_bodies[i], Body::Chordal(_));
+                let mut kin: Option<(f64, usize)> = None;
+                for j in 0..i {
+                    if set.patterns[j].track != set.patterns[i].track {
+                        continue;
+                    }
+                    let body_j = match pattern_bodies[j] {
+                        Body::Melodic(s) if !chordal_i => s,
+                        Body::Chordal(s) if chordal_i => s,
+                        _ => continue,
+                    };
+                    let sim = body_similarity(body_i, body_j);
+                    if sim >= KINSHIP_THRESHOLD && kin.is_none_or(|(best, _)| sim > best) {
+                        kin = Some((sim, j));
+                    }
+                }
+                PatternForm::Full { kin: kin.map(|(_, j)| j) }
+            }
+        })
+        .collect();
+
     let id_w = set.patterns.len().to_string().len();
-    let name_w = q.tracks.iter().map(|t| t.name.len() + 1).max().unwrap_or(0);
-    for p in &set.patterns {
-        // Find the Body behind this pattern via its key (first occurrence).
-        let bar = keys[p.track]
-            .iter()
-            .position(|k| k.as_deref() == Some(p.body.as_str()))
-            .expect("pattern came from these bodies");
+    let name_field = |i: usize| {
+        let p = &set.patterns[i];
         let name = &q.tracks[p.track].name;
-        match bodies[p.track][bar].as_ref().unwrap() {
-            Body::Melodic(s) => {
-                let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {s} |", p.id, name);
+        let star = if matches!(pattern_bodies[i], Body::Chordal(_)) { "*" } else { "" };
+        match &forms[i] {
+            PatternForm::Full { kin: Some(j) } => {
+                format!("{name}{star} ~P{}", set.patterns[*j].id)
             }
-            Body::Chordal(s) => {
-                let starred = format!("{name}*");
-                let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {s} |", p.id, starred);
+            _ => format!("{name}{star}"),
+        }
+    };
+    let name_w = (0..set.patterns.len())
+        .filter(|i| !matches!(pattern_bodies[*i], Body::Drums(_)))
+        .map(|i| name_field(i).len())
+        .max()
+        .unwrap_or(0);
+    for i in 0..set.patterns.len() {
+        let p = &set.patterns[i];
+        match (&forms[i], pattern_bodies[i]) {
+            (PatternForm::DrumsDiff { base, lanes }, _) => {
+                let _ = writeln!(
+                    out,
+                    "P{:<id_w$} {} ~P{}",
+                    p.id,
+                    q.tracks[p.track].name,
+                    set.patterns[*base].id
+                );
+                let _ = writeln!(out, "{}", render_lanes(lanes));
             }
-            Body::Drums(lanes) => {
-                let _ = writeln!(out, "P{:<id_w$} {name}", p.id);
-                let _ = writeln!(out, "{lanes}");
+            (_, Body::Drums(lanes)) => {
+                let _ = writeln!(out, "P{:<id_w$} {}", p.id, q.tracks[p.track].name);
+                let _ = writeln!(out, "{}", render_lanes(&lanes_sorted(lanes)));
+            }
+            (_, Body::Melodic(s) | Body::Chordal(s)) => {
+                let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {s} |", p.id, name_field(i));
             }
         }
     }

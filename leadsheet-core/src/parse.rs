@@ -92,6 +92,8 @@ enum BlockTarget {
 struct DrumBlock {
     track: usize,
     target: BlockTarget,
+    /// Variant base: lanes not listed here are inherited from it.
+    base: Option<usize>,
     lanes: Vec<(u8, Vec<bool>)>,
 }
 
@@ -242,9 +244,15 @@ fn validate_melodic(content: &str, cpb: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Split a `P1 bass | ... |` / `b3 piano* | ... |` line into
-/// (prefix-token, instrument, chordal?, content).
-fn split_music_line(line: &str) -> Result<(&str, &str, bool, &str), String> {
+fn parse_kin(tok: &str) -> Result<usize, String> {
+    tok.strip_prefix("~P")
+        .and_then(|n| n.parse().ok())
+        .ok_or_else(|| format!("expected ~P<n>, got {tok:?}"))
+}
+
+/// Split a `P1 bass | ... |` / `b3 piano* | ... |` / `P9 piano ~P7 | ... |`
+/// line into (prefix-token, instrument, chordal?, kin base, content).
+fn split_music_line(line: &str) -> Result<(&str, &str, bool, Option<usize>, &str), String> {
     let (prefix, rest) =
         line.split_once('|').ok_or_else(|| format!("expected `| ... |` in {line:?}"))?;
     let content = match rest.rfind('|') {
@@ -254,6 +262,10 @@ fn split_music_line(line: &str) -> Result<(&str, &str, bool, &str), String> {
     let mut parts = prefix.split_whitespace();
     let head = parts.next().ok_or("missing P/b label")?;
     let inst = parts.next().ok_or("missing instrument")?;
+    let kin = match parts.next() {
+        None => None,
+        Some(tok) => Some(parse_kin(tok)?),
+    };
     if let Some(junk) = parts.next() {
         return Err(format!("unexpected {junk:?} before `|`"));
     }
@@ -261,7 +273,7 @@ fn split_music_line(line: &str) -> Result<(&str, &str, bool, &str), String> {
         Some(base) => (base, true),
         None => (inst, false),
     };
-    Ok((head, inst, chordal, content))
+    Ok((head, inst, chordal, kin, content))
 }
 
 /// A drum lane line: `K |x... x.x.|` (exactly one token before `|`).
@@ -342,16 +354,37 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         b: &mut Builder,
         cpb: u32,
     ) -> Result<(), String> {
+        // Resolve a variant against its base: unlisted lanes are inherited,
+        // listed ones replace (an all-dots lane clears a base lane).
+        let lanes = match block.base {
+            None => block.lanes,
+            Some(base_id) => {
+                let base = patterns
+                    .get(&base_id)
+                    .ok_or_else(|| format!("unknown variant base P{base_id}"))?;
+                if base.track != block.track {
+                    return Err(format!("variant base P{base_id} is a different instrument"));
+                }
+                let [RecBody::Drums(base_lanes)] = base.bars.as_slice() else {
+                    return Err(format!("variant base P{base_id} is not a drum pattern"));
+                };
+                let mut merged = base_lanes.clone();
+                for (pitch, cells) in block.lanes {
+                    merged.retain(|(p, _)| *p != pitch);
+                    merged.push((pitch, cells));
+                }
+                merged
+            }
+        };
         match block.target {
             BlockTarget::Pattern(id) => {
-                let rec =
-                    PatternRec { track: block.track, bars: vec![RecBody::Drums(block.lanes)] };
+                let rec = PatternRec { track: block.track, bars: vec![RecBody::Drums(lanes)] };
                 if patterns.insert(id, rec).is_some() {
                     return Err(format!("duplicate pattern P{id}"));
                 }
             }
             BlockTarget::Direct(bar) => {
-                b.apply(block.track, (bar - 1) * cpb, cpb, &RecBody::Drums(block.lanes))?;
+                b.apply(block.track, (bar - 1) * cpb, cpb, &RecBody::Drums(lanes))?;
             }
         }
         Ok(())
@@ -429,9 +462,13 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         }
 
         if !line.contains('|') {
-            // Drum block opener: `P2 drums` or `b3 drums`.
+            // Drum block opener: `P2 drums`, `b3 drums`, or `P8 drums ~P3`.
             let mut parts = line.split_whitespace();
             let (head, inst) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            let base = match parts.next() {
+                None => None,
+                Some(tok) => Some(parse_kin(tok).map_err(|m| err(lineno, m))?),
+            };
             if parts.next().is_some() || inst.is_empty() {
                 return Err(err(lineno, format!("cannot parse {line:?}")));
             }
@@ -452,17 +489,27 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
             } else {
                 return Err(err(lineno, format!("expected P<n> or b<n>, got {head:?}")));
             };
-            pending = Some(DrumBlock { track: ti, target, lanes: Vec::new() });
+            pending = Some(DrumBlock { track: ti, target, base, lanes: Vec::new() });
             continue;
         }
 
         // Pattern definition or direct bar line. `content` may span several
         // bars separated by `|`.
-        let (head, inst, chordal, content) = split_music_line(line).map_err(|m| err(lineno, m))?;
+        let (head, inst, chordal, kin, content) =
+            split_music_line(line).map_err(|m| err(lineno, m))?;
         let ti = *b
             .track_index
             .get(inst)
             .ok_or_else(|| err(lineno, format!("unknown instrument {inst:?}")))?;
+        // Melodic/chordal kinship is informational; just sanity-check it.
+        if let Some(base_id) = kin {
+            let base = patterns
+                .get(&base_id)
+                .ok_or_else(|| err(lineno, format!("unknown variant base P{base_id}")))?;
+            if base.track != ti {
+                return Err(err(lineno, format!("variant base P{base_id} is a different instrument")));
+            }
+        }
         let bars: Vec<RecBody> = content
             .split('|')
             .map(|seg| {

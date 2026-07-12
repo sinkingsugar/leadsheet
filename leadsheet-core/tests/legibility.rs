@@ -177,6 +177,72 @@ arrangement:
 }
 
 #[test]
+fn drum_variants_emit_as_lane_diffs() {
+    // Two nearly-identical drum bars: the second must emit as `~P` with
+    // only the changed lane, and survive the roundtrip.
+    let mut drums = Vec::new();
+    for bar in 0..2u32 {
+        let base = bar * 16;
+        for c in [0, 8] {
+            drums.push(n(36, base + c, 1));
+        }
+        for c in [4, 12] {
+            drums.push(n(38, base + c, 1));
+        }
+        for i in 0..8 {
+            // Bar 2 opens the hat pattern on the last beat.
+            if bar == 1 && i >= 6 {
+                drums.push(n(46, base + i * 2, 1));
+            } else {
+                drums.push(n(42, base + i * 2, 1));
+            }
+        }
+    }
+    let q = QSong {
+        name: "var".into(),
+        bpm: 100.0,
+        meter: (4, 4),
+        key: None,
+        n_bars: 2,
+        tracks: vec![QTrack { name: "drums".into(), program: 0, is_drums: true, notes: drums }],
+    };
+    let text = emit::emit(&q);
+    assert!(text.contains("drums ~P1"), "variant header:\n{text}");
+    // The diff must contain h and O lanes but inherit K and S.
+    let variant_block: Vec<&str> =
+        text.lines().skip_while(|l| !l.contains("~P1")).skip(1).take_while(|l| l.starts_with("  ")).collect();
+    let labels: Vec<&str> =
+        variant_block.iter().map(|l| l.split_whitespace().next().unwrap()).collect();
+    assert_eq!(labels, ["h", "O"], "only changed lanes in diff:\n{text}");
+    let q2 = parse::parse(&text).unwrap();
+    assert_eq!(structural(&q2), structural(&q), "text:\n{text}");
+    assert_eq!(emit::emit(&q2), text, "canonical");
+}
+
+#[test]
+fn melodic_kinship_is_informational() {
+    let mk = |cells: &[(u8, u32)], bar: u32| -> Vec<QNote> {
+        cells.iter().map(|&(p, c)| n(p, bar * 16 + c, 2)).collect()
+    };
+    let mut notes = mk(&[(60, 0), (64, 2), (67, 4), (64, 6), (60, 8), (64, 10), (67, 12), (64, 14)], 0);
+    // Bar 2: same figure, one note changed.
+    notes.extend(mk(&[(60, 0), (64, 2), (67, 4), (64, 6), (60, 8), (64, 10), (69, 12), (64, 14)], 1));
+    let q = QSong {
+        name: "kin".into(),
+        bpm: 100.0,
+        meter: (4, 4),
+        key: None,
+        n_bars: 2,
+        tracks: vec![QTrack { name: "p".into(), program: 0, is_drums: false, notes }],
+    };
+    let text = emit::emit(&q);
+    assert!(text.contains("p ~P1 |"), "kinship marker:\n{text}");
+    let q2 = parse::parse(&text).unwrap();
+    assert_eq!(structural(&q2), structural(&q));
+    assert_eq!(emit::emit(&q2), text, "canonical");
+}
+
+#[test]
 fn chord_holds_accumulate_duration() {
     let text = "\
 # song: hold  tempo: 90.00  meter: 4/4  grid: 1/16
