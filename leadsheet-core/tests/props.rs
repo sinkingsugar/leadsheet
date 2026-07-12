@@ -41,12 +41,13 @@ use std::collections::HashMap;
 
 const BUCKETS: [u8; 6] = [32, 48, 64, 80, 96, 112];
 
-/// One template event: a note/chord (melodic) or a hit (drums, where `dur`
-/// is a stroke count 1..=4).
+/// One template event: a note/chord (melodic, times in ticks) or a hit
+/// (drums, where `onset_ticks` is cell-aligned and `dur_ticks` doubles as
+/// the stroke count 1..=4).
 #[derive(Debug, Clone)]
 struct Ev {
-    onset: u32,
-    dur: u32,
+    onset_ticks: i64,
+    dur_ticks: i64,
     pitches: Vec<u8>,
     vel: u8,
 }
@@ -60,16 +61,56 @@ struct GenCfg {
     max_strokes: u32,
     /// Allow a swing header.
     swing: bool,
+    /// Allow sub-16th durations/onsets (32nds, dotted values, tuplet
+    /// members). Off for the compiled roundtrip: quantized input is
+    /// on-grid by definition.
+    fractional: bool,
 }
 
-const CANONICAL: GenCfg = GenCfg { bucketed_vels: false, max_strokes: 4, swing: true };
-const STRUCTURAL: GenCfg = GenCfg { bucketed_vels: true, max_strokes: 4, swing: true };
-const COMPILED: GenCfg = GenCfg { bucketed_vels: false, max_strokes: 1, swing: false };
+const CANONICAL: GenCfg =
+    GenCfg { bucketed_vels: false, max_strokes: 4, swing: true, fractional: true };
+const STRUCTURAL: GenCfg =
+    GenCfg { bucketed_vels: true, max_strokes: 4, swing: true, fractional: true };
+const COMPILED: GenCfg =
+    GenCfg { bucketed_vels: false, max_strokes: 1, swing: false, fractional: false };
 
-fn melodic_ev(cpb: u32) -> impl Strategy<Value = Ev> {
-    (0..cpb, 1..=cpb + 8, prop::collection::btree_set(24u8..=96, 1..=3), 1u8..=127).prop_map(
-        |(onset, dur, pitches, vel)| Ev { onset, dur, pitches: pitches.into_iter().collect(), vel },
+/// Melodic durations in ticks: whole cells, or (when `fractional`) the
+/// interesting sub-16th values — 32nds/64ths, dotted, triplet and
+/// quintuplet members — which exercise fraction spelling and canonical
+/// tuplet grouping.
+fn melodic_dur(cpb: u32, fractional: bool) -> BoxedStrategy<i64> {
+    let cells = (1..=cpb + 8).prop_map(|c| c as i64 * 240);
+    if fractional {
+        prop_oneof![
+            4 => cells,
+            2 => prop::sample::select(vec![120i64, 60, 360, 600, 180]),
+            2 => prop::sample::select(vec![320i64, 160, 80, 40, 192, 96, 48]),
+        ]
+        .boxed()
+    } else {
+        cells.boxed()
+    }
+}
+
+fn melodic_ev(cpb: u32, fractional: bool) -> impl Strategy<Value = Ev> {
+    let onset_shift = if fractional {
+        prop_oneof![4 => Just(0i64), 1 => Just(120i64), 1 => Just(80i64)].boxed()
+    } else {
+        Just(0i64).boxed()
+    };
+    (
+        0..cpb,
+        onset_shift,
+        melodic_dur(cpb, fractional),
+        prop::collection::btree_set(24u8..=96, 1..=3),
+        1u8..=127,
     )
+        .prop_map(|(cell, shift, dur, pitches, vel)| Ev {
+            onset_ticks: cell as i64 * 240 + shift,
+            dur_ticks: dur,
+            pitches: pitches.into_iter().collect(),
+            vel,
+        })
 }
 
 /// Symbols whose canonical voicings the emitter can name back (chord mode).
@@ -89,7 +130,7 @@ fn chordal_template(cpb: u32) -> impl Strategy<Value = Vec<Ev>> {
                     c.map(|(sym, vel)| {
                         let sym = chord::parse_symbol(sym).expect("static symbol");
                         let pitches = chord::voicing(&sym).expect("static symbol voices");
-                        Ev { onset: i as u32 * 4, dur: 4, pitches, vel }
+                        Ev { onset_ticks: i as i64 * 960, dur_ticks: 960, pitches, vel }
                     })
                 })
                 .collect()
@@ -98,10 +139,10 @@ fn chordal_template(cpb: u32) -> impl Strategy<Value = Vec<Ev>> {
 
 /// Base templates plus near-identical mutations, so pattern dedup, drum
 /// lane diffs (`~P` inheritance) and melodic kinship all get exercised.
-fn melodic_templates(cpb: u32) -> impl Strategy<Value = Vec<Vec<Ev>>> {
+fn melodic_templates(cpb: u32, fractional: bool) -> impl Strategy<Value = Vec<Vec<Ev>>> {
     prop_oneof![
         3 => (
-            prop::collection::vec(melodic_ev(cpb), 0..=8),
+            prop::collection::vec(melodic_ev(cpb, fractional), 0..=8),
             prop::collection::vec((any::<prop::sample::Index>(), 24u8..=96), 0..=2),
         )
             .prop_map(|(base, muts)| {
@@ -126,9 +167,9 @@ fn drum_pitch() -> impl Strategy<Value = u8> {
 }
 
 fn drum_ev(cpb: u32, max_strokes: u32) -> impl Strategy<Value = Ev> {
-    (0..cpb, 1..=max_strokes, drum_pitch(), 1u8..=127).prop_map(|(onset, strokes, p, vel)| Ev {
-        onset,
-        dur: strokes,
+    (0..cpb, 1..=max_strokes, drum_pitch(), 1u8..=127).prop_map(|(cell, strokes, p, vel)| Ev {
+        onset_ticks: cell as i64 * 240,
+        dur_ticks: strokes as i64,
         pitches: vec![p],
         vel,
     })
@@ -172,7 +213,7 @@ fn arb_track(cfg: GenCfg, cpb: u32, n_bars: u32) -> impl Strategy<Value = TrackG
         let templates = if is_drums {
             drum_templates(cpb, cfg.max_strokes).boxed()
         } else {
-            melodic_templates(cpb).boxed()
+            melodic_templates(cpb, cfg.fractional).boxed()
         };
         (
             0u8..=127,
@@ -196,23 +237,36 @@ fn arb_track(cfg: GenCfg, cpb: u32, n_bars: u32) -> impl Strategy<Value = TrackG
 /// case the format promises to preserve), sorted like the
 /// quantizer sorts.
 fn assemble(cfg: GenCfg, t: &TrackGen, idx: usize, cpb: u32, n_bars: u32) -> QTrack {
-    let total = n_bars * cpb;
+    let total_ticks = n_bars as i64 * cpb as i64 * 240;
     let mut notes: Vec<QNote> = Vec::new();
     for (bar, choice) in t.choices.iter().enumerate() {
         let Some(c) = choice else { continue };
         let tpl = &t.templates[c % t.templates.len()];
         for ev in tpl {
-            let cell = bar as u32 * cpb + ev.onset;
+            let onset = bar as i64 * cpb as i64 * 240 + ev.onset_ticks;
+            if onset >= total_ticks {
+                continue;
+            }
             let vel = if cfg.bucketed_vels { t.bucket } else { ev.vel };
             for &p in &ev.pitches {
                 if t.is_drums {
-                    // ev.dur is the stroke digit; the hit occupies one cell.
-                    let mut hit = QNote::from_cells(p, cell, 1, vel);
-                    hit.strokes = ev.dur as u8;
-                    notes.push(hit);
+                    // dur_ticks is the stroke digit; the hit occupies one cell.
+                    notes.push(QNote {
+                        pitch: p,
+                        onset: MusicalTime(onset),
+                        dur: MusicalTime(240),
+                        strokes: ev.dur_ticks as u8,
+                        vel,
+                    });
                 } else {
-                    let dur = ev.dur.min(total - cell).max(1);
-                    notes.push(QNote::from_cells(p, cell, dur, vel));
+                    let dur = ev.dur_ticks.min(total_ticks - onset).max(1);
+                    notes.push(QNote {
+                        pitch: p,
+                        onset: MusicalTime(onset),
+                        dur: MusicalTime(dur),
+                        strokes: 1,
+                        vel,
+                    });
                 }
             }
         }

@@ -39,7 +39,8 @@ arrangement:
 
 ## Time
 
-Everything is measured in **grid cells** = 16th notes. A 4/4 bar has 16
+Everything is measured in **grid cells** = 16th notes, with sub-cell
+resolution via fractions and tuplets (below). A 4/4 bar has 16
 cells (3/4 → 12, 6/8 → 12); a beat is 4 cells. The compressor emits
 one-bar patterns; hand-written patterns may span several bars:
 `P2 piano* | Am . . . | F . C . |` (chord holds don't cross the internal
@@ -55,6 +56,17 @@ bar lines — restate the chord).
   there is *no* key-signature inference and nothing is sticky across a
   bar. Every token reads in isolation.
 - Duration: cell count suffix, `1` implied (`e2` = an 8th, `c4` = a beat).
+  Fractions of a cell as in real ABC: `e/2` = a 32nd, `e/4` = a 64th,
+  `C3/2` = a dotted 16th. Lowest terms is the canonical spelling; the
+  denominator must land on the underlying tick grid (2, 3, 4, 5, 6, 8, …
+  work; `/7` of a single cell doesn't).
+- Tuplets: `(3 C D E)4` = three notes evenly dividing 4 cells (an 8th
+  triplet over the beat); `(3 e f g)2` = a 16th triplet; `(5 …)4` = a
+  quintuplet. Members are bare pitches, `[..]` chords or `z` rests —
+  marks allowed, no durations, no nesting; the arity must match the
+  member count and divide the span evenly. Tie the whole group with `-`
+  after the span: `(3 C E G)4-`. Runs of equal triplet-length notes
+  written as fractions (`C4/3 D4/3 E4/3`) canonicalize to the group form.
 - `z2` = rest. `[CEG]4` = simultaneous notes (exact pitches, any content).
 - `-` = tie into the next bar: `C8-` … next bar `C4` continues the note.
 - ` & ` separates overlapping voices within a bar (sustained note under a
@@ -106,8 +118,8 @@ P3 drums@f
 - Drum subdivision below the 16th grid, per cell: `2` = two 32nd strokes
   (drag/roll), `3` = triplet strokes, `4` = four 64ths (buzz). A 32nd-note
   snare roll is `S |2222 2222 2222 2222|`. Strokes play at the pattern's
-  base dynamic. (Melodic 32nds via `/` fractions are planned; they need
-  the internal clock refactored first.)
+  base dynamic. (Melodic sub-16th values are `/` fractions and tuplet
+  groups — see Melodic above.)
 - Compression is lossy by bucket: each bar's base is the bucketed median
   velocity; notes ≥12 above it emit `>`, ≥16 below emit `~`. A file with
   constant velocity emits no marks at all.

@@ -23,7 +23,7 @@ use crate::drums;
 use crate::error::{Diagnostic, Error};
 use crate::grid::{MusicalTime, QNote, QSong, QTrack};
 use crate::key::Key;
-use crate::notation::{self, Mark, Tok, parse_token};
+use crate::notation::{self, Mark, Tok};
 use std::collections::HashMap;
 
 /// Hard ceilings against pathological input — parse must stay panic-free
@@ -184,13 +184,53 @@ struct DrumBlock {
 struct Builder {
     tracks: Vec<QTrack>,
     track_index: HashMap<String, usize>,
-    /// Open ties per (track, pitch): (index into track notes, end cell so
+    /// Open ties per (track, pitch): (index into track notes, end tick so
     /// far). Several can be open at once (doubled pitches in a chord), so
-    /// continuations match by end cell.
-    open_ties: HashMap<(usize, u8), Vec<(usize, u32)>>,
+    /// continuations match by end position.
+    open_ties: HashMap<(usize, u8), Vec<(usize, MusicalTime)>>,
+}
+
+/// Diagnostics-friendly cell count for a tick position ("8", "7.5").
+fn cells_display(t: MusicalTime) -> String {
+    let cells = t.ticks() as f64 / MusicalTime::from_sixteenths(1).ticks() as f64;
+    if cells.fract() == 0.0 { format!("{cells:.0}") } else { format!("{cells}") }
 }
 
 impl Builder {
+    /// Place one note/chord (or tuplet member) at `onset`, joining an open
+    /// tie that ends exactly there; register a new tie when asked.
+    fn place(
+        &mut self,
+        ti: usize,
+        onset: MusicalTime,
+        dur: MusicalTime,
+        pitches: &[u8],
+        tie: bool,
+        vel: u8,
+    ) {
+        for &pitch in pitches {
+            let key = (ti, pitch);
+            // Only a tie ending exactly at the onset is consumed — other
+            // open ties on this pitch stay registered.
+            let open = self.open_ties.get_mut(&key).and_then(|v| {
+                v.iter().position(|&(_, end)| end == onset).map(|i| v.swap_remove(i).0)
+            });
+            let idx = match open {
+                Some(idx) => {
+                    self.tracks[ti].notes[idx].dur += dur;
+                    idx
+                }
+                None => {
+                    self.tracks[ti].notes.push(QNote { pitch, onset, dur, strokes: 1, vel });
+                    self.tracks[ti].notes.len() - 1
+                }
+            };
+            if tie {
+                self.open_ties.entry(key).or_default().push((idx, onset + dur));
+            }
+        }
+    }
+
     /// Place one melodic bar (`voice & voice`) at `bar_start` cells.
     fn apply_melodic(
         &mut self,
@@ -200,55 +240,81 @@ impl Builder {
         content: &str,
         base: u8,
     ) -> Result<(), Raw> {
+        let bar_start = MusicalTime::from_sixteenths(bar_start);
+        let bar_end = bar_start + MusicalTime::from_sixteenths(cpb);
         for voice in content.split('&') {
+            let toks =
+                notation::parse_tokens(voice).map_err(|m| raw("bad-token", m).hint(TOKEN_SHAPE))?;
             let mut cursor = bar_start;
-            for tok_str in voice.split_whitespace() {
-                let tok =
-                    parse_token(tok_str).map_err(|m| raw("bad-token", m).hint(TOKEN_SHAPE))?;
+            for tok in toks {
                 let dur = tok.dur();
-                // u64: a hostile duration must not wrap the bounds check.
-                if cursor as u64 + dur as u64 > (bar_start + cpb) as u64 {
-                    return Err(raw("bar-length", format!("bar overflows at token {tok_str:?}"))
+                if cursor.ticks().saturating_add(dur.ticks()) > bar_end.ticks() {
+                    let spelled = notation::emit_token(&tok);
+                    return Err(raw("bar-length", format!("bar overflows at token {spelled:?}"))
                         .hint(format!(
                             "durations in this bar sum past its {cpb} cells — shorten one, or move \
                          the overflow into the next bar with a tie (`-`)"
                         ))
-                        .at(tok_str));
+                        .at(spelled));
                 }
-                let (pitches, tie, mark): (Vec<u8>, bool, Mark) = match tok {
-                    Tok::Rest { .. } => (vec![], false, Mark::None),
-                    Tok::Note { pitch, tie, mark, .. } => (vec![pitch], tie, mark),
-                    Tok::Chord { pitches, tie, mark, .. } => (pitches, tie, mark),
-                };
-                let vel = notation::apply_mark(base, mark);
-                for pitch in pitches {
-                    let key = (ti, pitch);
-                    // Continuation of a tied note joins it; else a new note.
-                    // Only a tie ending exactly at the cursor is consumed —
-                    // other open ties on this pitch stay registered.
-                    let open = self.open_ties.get_mut(&key).and_then(|v| {
-                        v.iter().position(|&(_, end)| end == cursor).map(|i| v.swap_remove(i).0)
-                    });
-                    let idx = match open {
-                        Some(idx) => {
-                            self.tracks[ti].notes[idx].dur += MusicalTime::from_sixteenths(dur);
-                            idx
+                match tok {
+                    Tok::Rest { .. } => {}
+                    Tok::Note { pitch, tie, mark, .. } => {
+                        self.place(
+                            ti,
+                            cursor,
+                            dur,
+                            &[pitch],
+                            tie,
+                            notation::apply_mark(base, mark),
+                        );
+                    }
+                    Tok::Chord { pitches, tie, mark, .. } => {
+                        self.place(
+                            ti,
+                            cursor,
+                            dur,
+                            &pitches,
+                            tie,
+                            notation::apply_mark(base, mark),
+                        );
+                    }
+                    Tok::Tuplet { n, members, span, tie } => {
+                        // Member i spans [i*S/n, (i+1)*S/n) — exact by the
+                        // divisibility check in parse_tokens.
+                        let step = MusicalTime(span.ticks() / n as i64);
+                        for (i, m) in members.iter().enumerate() {
+                            let at = cursor + step * i as i64;
+                            let last = i + 1 == members.len();
+                            match m {
+                                Tok::Rest { .. } => {}
+                                Tok::Note { pitch, mark, .. } => self.place(
+                                    ti,
+                                    at,
+                                    step,
+                                    &[*pitch],
+                                    tie && last,
+                                    notation::apply_mark(base, *mark),
+                                ),
+                                Tok::Chord { pitches, mark, .. } => self.place(
+                                    ti,
+                                    at,
+                                    step,
+                                    pitches,
+                                    tie && last,
+                                    notation::apply_mark(base, *mark),
+                                ),
+                                Tok::Tuplet { .. } => unreachable!("tuplets don't nest"),
+                            }
                         }
-                        None => {
-                            self.tracks[ti].notes.push(QNote::from_cells(pitch, cursor, dur, vel));
-                            self.tracks[ti].notes.len() - 1
-                        }
-                    };
-                    if tie {
-                        self.open_ties.entry(key).or_default().push((idx, cursor + dur));
                     }
                 }
                 cursor += dur;
             }
-            if cursor != bar_start + cpb && cursor != bar_start {
+            if cursor != bar_end && cursor != bar_start {
                 return Err(raw(
                     "bar-length",
-                    format!("voice covers {} of {cpb} cells", cursor - bar_start),
+                    format!("voice covers {} of {cpb} cells", cells_display(cursor - bar_start)),
                 )
                 .hint(
                     "every `&` voice must fill the bar exactly — pad with rests (z<n>) or \
@@ -344,29 +410,37 @@ const LANE_D4: u8 = 6;
 
 /// Check melodic token syntax and bar-sum without placing notes.
 fn validate_melodic(content: &str, cpb: u32) -> Result<(), Raw> {
+    let bar = MusicalTime::from_sixteenths(cpb).ticks();
     for voice in content.split('&') {
-        // u64: hostile durations must not wrap the sum.
-        let mut sum = 0u64;
-        for tok_str in voice.split_whitespace() {
-            let dur =
-                parse_token(tok_str).map_err(|m| raw("bad-token", m).hint(TOKEN_SHAPE))?.dur();
-            if sum + dur as u64 > cpb as u64 {
+        let toks =
+            notation::parse_tokens(voice).map_err(|m| raw("bad-token", m).hint(TOKEN_SHAPE))?;
+        // Saturating: hostile durations must not wrap the sum.
+        let mut sum = 0i64;
+        for tok in &toks {
+            let dur = tok.dur().ticks();
+            if sum.saturating_add(dur) > bar {
+                let spelled = notation::emit_token(tok);
                 return Err(raw(
                     "bar-length",
                     format!(
-                        "bar overflows at token {tok_str:?} ({sum} of {cpb} cells already used)"
+                        "bar overflows at token {spelled:?} ({} of {cpb} cells already used)",
+                        cells_display(MusicalTime(sum))
                     ),
                 )
                 .hint(
                     "durations sum past the bar — shorten one, or carry the note into the next \
                      bar with a tie (`-`)",
                 )
-                .at(tok_str));
+                .at(spelled));
             }
-            sum += dur as u64;
+            sum = sum.saturating_add(dur);
         }
-        if sum != cpb as u64 && sum != 0 {
-            return Err(raw("bar-length", format!("voice covers {sum} of {cpb} cells")).hint(
+        if sum != bar && sum != 0 {
+            return Err(raw(
+                "bar-length",
+                format!("voice covers {} of {cpb} cells", cells_display(MusicalTime(sum))),
+            )
+            .hint(
                 "every `&` voice must fill the bar exactly — pad with rests (z<n>) or adjust \
                  durations",
             ));

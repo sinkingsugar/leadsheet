@@ -411,3 +411,37 @@ b1 p* | Dm7 . . . |
     let q = parse::parse(text).unwrap();
     assert!(q.tracks[0].notes.iter().all(|x| x.dur_cells() == 16));
 }
+
+#[test]
+fn fractions_and_tuplets_author_roundtrip() {
+    // The 3b authoring surface: 32nds, a dotted figure, a triplet, and a
+    // tied tuplet — written by hand, parsed, rendered, canonicalized.
+    let text = "\
+# song: frac  tempo: 100.00  meter: 4/4  grid: 1/16
+# instruments: lead:81
+b1 lead | C/2 D/2 E F2 (3 G A B)4 c8 |
+b2 lead | C3/2 D/2 E2 (3 [CE] z c)4- c4 z4 |
+";
+    let q = parse::parse(text).unwrap();
+    let notes = &q.tracks[0].notes;
+    // Bar 1: C,D 32nds; E 16th; F 8th; triplet G A B; c half.
+    let t = |cell_ticks: i64| leadsheet_core::grid::MusicalTime(cell_ticks);
+    let find = |onset: i64| notes.iter().find(|n| n.onset == t(onset)).unwrap();
+    assert_eq!(find(0).dur, t(120), "32nd");
+    assert_eq!(find(120).dur, t(120));
+    assert_eq!(find(960).dur, t(320), "triplet member");
+    assert_eq!(find(1280).dur, t(320));
+    // Bar 2: the tied tuplet's last member joins the following c4.
+    let tied = notes.iter().find(|n| n.onset == t(3840 + 960 + 640)).unwrap();
+    assert_eq!(tied.dur, t(320 + 960), "tuplet tie joins across the group");
+    // Canonical emission is a fixpoint and keeps the group spelling.
+    let text2 = emit::emit(&q);
+    assert!(text2.contains("(3 G A B)4"), "{text2}");
+    assert!(text2.contains("C/2"), "{text2}");
+    assert!(text2.contains("C3/2"), "{text2}");
+    assert_eq!(emit::emit(&parse::parse(&text2).unwrap()), text2, "canonical");
+    // And it renders to valid MIDI with every note.
+    let midi = render::render(&q);
+    let back = ingest::ingest_midi(&midi, "frac").unwrap();
+    assert_eq!(back.note_count(), notes.len());
+}

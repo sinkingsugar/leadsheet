@@ -113,7 +113,9 @@ Prerequisite for melodic 32nds, triplets, grace notes — do it once.
 **3a (clock internals) DONE 2026-07-12** — see DESIGN-960.md. Zero format
 change, corpus byte-identical without regeneration, Matrix.mid compress
 output byte-identical, roundtrip F1 unchanged through the 960 PPQ render.
-Remaining items below are 3b (syntax, gated on the bake-off).
+**3b (fractions + tuplet syntax) DONE 2026-07-12** — same day, on the
+delegated spelling decision. Still open below: tuplets as semantic
+objects (needs Phase 2's Document) and per-track swing (unblessed).
 
 - [x] Internal time base moves from 16th-cells to **ticks: 960 per beat**
       — the industry-converged resolution (Ableton Live, Pro Tools,
@@ -139,16 +141,16 @@ Remaining items below are 3b (syntax, gated on the bake-off).
       boundaries `round(i·960/n)`, span always closes exactly. A
       septuplet stays "a septuplet" in the source and the Document even
       though its tick placement rounds.
-- [ ] Melodic 32nds — `/` fraction spelling enters the syntax bake-off
-      below. [EVAL: bake-off]
-- [ ] Melodic tuplets — candidates: `(3 C D E)4` (ABC-flavored group,
-      generalizes to `(5 ...)4`, optional internal weights `(3 C2 D)4`),
-      vs. at least one alternative spelling. **Decided by measurement,
-      not taste**: parse-only throwaway implementations per candidate,
-      then an LLM bake-off — zero-shot comprehension (no FORMAT.md),
-      spec-in-context writing validity, edit-task constraint pass rate.
-      Winner gets canonical emission; losers die in the branch.
-      [EVAL: bake-off]
+- [x] Melodic 32nds — `/` fraction spelling (exactly ABC's prior:
+      `C/2` halves the unit). Shipped 2026-07-12.
+- [x] Melodic tuplets — `(3 C D E)4` shipped 2026-07-12 (equal members,
+      marks allowed, group tie, no nesting; inexact divisions like a
+      lone septuplet are rejected until the Document layer can hold
+      them semantically). Spelling decided by the resident LLM user on
+      Gio's delegation — prior-alignment with ABC on both features —
+      rather than a multi-model bake-off; the Phase 4 eval harness can
+      re-measure and overturn the spelling if data disagrees. Internal
+      weights (`(3 C2 D)4`) deliberately left out for now.
 - [ ] Per-track swing override (drums shuffle / pads straight).
       [GIO: floated, still undecided — skip unless blessed]
 - [ ] Design note only (no implementation): the tick model must not

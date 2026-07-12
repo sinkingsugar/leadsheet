@@ -163,9 +163,9 @@ fn bar_voices(segs: &[Seg], bar_len: MusicalTime, flats: bool, base: u8) -> Vec<
         let mark = notation::mark_for_vel(vels[(vels.len() - 1) / 2], base);
         let pitches: Vec<u8> = notes.iter().map(|(p, _)| *p).collect();
         let tok = if pitches.len() == 1 {
-            Tok::Note { pitch: pitches[0], dur: dur.as_sixteenths(), tie, mark }
+            Tok::Note { pitch: pitches[0], dur, tie, mark }
         } else {
-            Tok::Chord { pitches, dur: dur.as_sixteenths(), tie, mark }
+            Tok::Chord { pitches, dur, tie, mark }
         };
         let voice = match voices.iter_mut().find(|v| v.end <= onset) {
             Some(v) => v,
@@ -175,7 +175,7 @@ fn bar_voices(segs: &[Seg], bar_len: MusicalTime, flats: bool, base: u8) -> Vec<
             }
         };
         if onset > voice.end {
-            voice.toks.push(Tok::Rest { dur: (onset - voice.end).as_sixteenths() });
+            voice.toks.push(Tok::Rest { dur: onset - voice.end });
         }
         voice.toks.push(tok);
         voice.end = onset + dur;
@@ -184,9 +184,12 @@ fn bar_voices(segs: &[Seg], bar_len: MusicalTime, flats: bool, base: u8) -> Vec<
         .into_iter()
         .map(|mut v| {
             if v.end < bar_len {
-                v.toks.push(Tok::Rest { dur: (bar_len - v.end).as_sixteenths() });
+                v.toks.push(Tok::Rest { dur: bar_len - v.end });
             }
-            v.toks.iter().map(|t| emit_token_spelled(t, flats)).collect::<Vec<_>>().join(" ")
+            // Canonical tuplet grouping: runs of equal non-power-of-two
+            // divisions read as `(n …)S`.
+            let toks = notation::detect_tuplets(v.toks);
+            toks.iter().map(|t| emit_token_spelled(t, flats)).collect::<Vec<_>>().join(" ")
         })
         .collect()
 }

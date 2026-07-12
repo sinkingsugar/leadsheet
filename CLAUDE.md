@@ -21,16 +21,18 @@ PLAN.md Phase 1 (bulletproofing) is done and tagged `phase-1`: proptest
 invariant properties (running un-ignored, 3 canonicality bugs found and
 fixed), fuzz + hardened parser (panic-free, bounded, structured
 diagnostics), golden corpus in `corpus/`, and the `check`/`fmt` agent
-loop. Phase 3a is also done: internal time is `grid::MusicalTime`
-(960 ticks/beat, DESIGN-960.md), drums carry an explicit stroke count,
-MIDI renders at 960 PPQ. Next: the tuplet/32nd syntax bake-off (3b).
+loop. Phase 3 is done: internal time is `grid::MusicalTime` (960
+ticks/beat, DESIGN-960.md), drums carry an explicit stroke count, MIDI
+renders at 960 PPQ, and the melodic surface gained `/` fractions
+(`e/2` = 32nd, `C3/2` dotted) and tuplet groups (`(3 C D E)4`).
+Next: Phase 2 — the Document AST + semantic diff.
 
 ## Map
 
 | Where | What |
 |---|---|
 | `FORMAT.md` | **The format spec.** Paste it alongside a `.ls` when prompting an LLM. |
-| `PLAN.md` | Scope charter + phased roadmap (Phases 1 and 3a done; 3b bake-off next). |
+| `PLAN.md` | Scope charter + phased roadmap (Phases 1 and 3 done; 2 next). |
 | `corpus/` | Golden fixtures: compress output is byte-locked by `tests/corpus.rs`. |
 | `leadsheet-core/` | Library. `ingest` (.mid + MuScriptor jsonl) → `tempo`/`grid` (beat inference, quantization) → `chord`/`key`/`drums`/`notation` (semantics) → `pattern`/`emit` (text out) and `parse`/`render` (text in → MIDI). `metrics` is the oracle. |
 | `leadsheet-cli/` | `leadsheet compress | render | roundtrip | inspect | check | fmt` |
@@ -76,10 +78,8 @@ from the MuScriptor HF cache.
 
 ## Next / deferred
 
-- **Phase 3b / syntax bake-off (hot):** melodic 32nds (`/` fractions)
-  and tuplet spelling — the clock (960 ticks/beat, `grid::MusicalTime`,
-  DESIGN-960.md) landed 2026-07-12, so these are now purely
-  language-surface decisions, chosen by LLM bake-off per PLAN.md.
+- **Phase 2 (next):** the Document AST + `leadsheet diff`. It also
+  unlocks septuplet-style inexact tuplets (kept as semantic objects).
 - Per-track swing override (drums shuffle, pads straight) — floated,
   undecided.
 - Analysis-grade chord view (roman numerals over real comping), BPE motif
