@@ -149,6 +149,56 @@ fn validate_rejects_host_built_mistakes() {
     assert!(q.validate().is_err());
 }
 
+/// A1: the diff contract is "empty = semantically identical", and
+/// timeline *order* is semantic (the E6 joined/split pair compiles to
+/// different QSongs). Reordering rows and directs must never diff empty.
+#[test]
+fn semantic_diff_sees_timeline_order() {
+    let joined = "\
+# song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
+# instruments: p:0
+P1 p | C16- |
+arrangement:
+  [P1]
+b2 p | C16 |
+";
+    let split = "\
+# song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
+# instruments: p:0
+P1 p | C16- |
+b2 p | C16 |
+arrangement:
+  [P1]
+";
+    let (a, b) = (doc(joined), doc(split));
+    let report = diff::diff(&a, &b);
+    assert!(!report.is_empty(), "row/direct interleaving is tie-semantic and must diff nonempty");
+    assert!(report.contains("timeline item 1"), "{report}");
+    assert!(diff::diff(&a, &a).is_empty());
+    assert!(diff::diff(&b, &b).is_empty());
+}
+
+/// D2: `kin` is source-semantic Document structure; retargeting it with
+/// an unchanged body must be reported.
+#[test]
+fn semantic_diff_reports_kin_changes() {
+    let base = "\
+# song: k  tempo: 100.00  meter: 4/4  grid: 1/16
+# instruments: p:0
+P1 p     | C4 E4 G4 c4 |
+P2 p     | D4 F4 A4 d4 |
+P3 p ~P1 | C4 E4 G4 z4 |
+arrangement:
+  [P3]
+";
+    let retargeted = base.replace("P3 p ~P1", "P3 p ~P2");
+    let report = diff::diff(&doc(base), &doc(&retargeted));
+    assert!(report.contains("P3: kin ~P1 -> ~P2"), "{report}");
+    let dropped = base.replace(" ~P1", "");
+    let report = diff::diff(&doc(base), &doc(&dropped));
+    assert!(report.contains("P3: kin ~P1 -> -"), "{report}");
+}
+
 #[test]
 fn semantic_diff_reports_at_the_right_granularity() {
     let edited = AUTHOR
