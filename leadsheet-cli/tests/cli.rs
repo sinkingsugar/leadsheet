@@ -177,7 +177,8 @@ fn eval_harness_passes_on_sample_outputs() {
 
     // C1: `matches` is note-exact in BOTH directions — an answer that
     // contains every target track plus an invented extra one must FAIL,
-    // and so must a renamed track.
+    // and so must a renamed track. B1: velocity is part of exactness —
+    // fixing the syntax while destroying the dynamics is no pass.
     let repair = dir.join("repair");
     let target = std::fs::read_to_string(repair.join("target.ls")).unwrap();
     for (label, wrong) in [
@@ -188,6 +189,7 @@ fn eval_harness_passes_on_sample_outputs() {
                 .replace("b1 lead | e4 c4 d4 B4 |", "b1 lead | e4 c4 d4 B4 |\nb1 ghost | C16 |"),
         ),
         ("renamed track", target.replace("lead", "solo")),
+        ("mangled dynamics", target.replace("b1 lead |", "b1 lead@pp |")),
     ] {
         let task = tmp.join("repair");
         std::fs::create_dir_all(&task).unwrap();
@@ -205,4 +207,26 @@ fn eval_harness_passes_on_sample_outputs() {
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    // ...and the per-task opt-out: the same mangled-dynamics answer
+    // passes when the task declares `"velocity": false`.
+    let task = tmp.join("repair");
+    std::fs::create_dir_all(&task).unwrap();
+    for f in ["input.ls", "instruction.txt", "target.ls"] {
+        std::fs::copy(repair.join(f), task.join(f)).unwrap();
+    }
+    std::fs::write(
+        task.join("constraints.json"),
+        r#"[{"type":"parses"},{"type":"matches","file":"target.ls","velocity":false}]"#,
+    )
+    .unwrap();
+    std::fs::write(task.join("output.ls"), target.replace("b1 lead |", "b1 lead@pp |")).unwrap();
+    let out = bin().args(["eval"]).arg(&tmp).output().unwrap();
+    no_panic(&out);
+    assert!(
+        out.status.success(),
+        "velocity:false must permit dynamic variation:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
 }

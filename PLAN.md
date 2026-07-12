@@ -207,13 +207,14 @@ calls, no model deps in the crate.
       `(2 …)S` as intentional grouping or generate it spuriously and
       fragment canonical form, then bless from data. A source-language
       identity call, not a compiler question.
-- [ ] **`matches` velocity policy** (B4, triage-3, Gio decides — before
-      the runs, since `matches` is the measuring instrument): the eval's
-      `NoteKey` is (pitch, onset, dur, strokes) — an output with mangled
-      dynamics (`@ff` for `@pp`, accents stripped) still passes
-      `matches`. Options: add vel to the key, add a per-task
-      `dynamics_match` constraint, or declare velocity out of scope on
-      purpose.
+- [x] **`matches` velocity policy** (B4/r4-B1, DECIDED by Gio
+      2026-07-13, Sol's split): velocity is part of note identity —
+      `NoteKey` is (pitch, onset, dur, strokes, vel), so every
+      note-comparing constraint is velocity-sensitive; `matches` takes
+      a per-task `"velocity": false` opt-out for tasks that
+      intentionally permit dynamic variation. Decided before any
+      external run so the scoring rule wasn't chosen after seeing
+      results.
 - [ ] **Retroactive spelling bake-off** (governance debt from 3b): measure
       `/` fractions and `(n …)S` tuplets across models — zero-shot
       comprehension, spec-in-context writing validity, edit-task pass
@@ -286,17 +287,19 @@ therefore **retroactively measures both spellings** as one of its first
 jobs, and the data may overturn them. One governance story: measured by
 default, this one delegated and to be back-measured.
 
-**Recorded narrowings (2026-07-12, review triage rounds 2–3, pending
-Gio's veto):** three retroactive *format narrowings* shipped as
+**Recorded narrowings (review triage rounds 2–4; BLESSED by Gio
+2026-07-13):** four retroactive *format narrowings* shipped as
 correctness fixes, not spellings — instrument/track names whitelisted
 to letters/digits/`_`/`-` (`sax!`, `ünï` used to parse; r2); duplicate
 drum lanes and non-MIDI-representable tempos rejected at parse (they
-silently double-placed hits or clamped at render; r2); and BPM
-canonically hundredth-quantized with a repair diagnostic
-(`tempo: 100.001` used to parse and be silently rewritten to `100.00`
-by the first fmt; r3, Sol+J2 concur on quantize-over-preserve). All
-reject-only-pathological: no corpus file, ingest output, or roundtrip
-behavior changed. Documented in FORMAT.md; revert here if you disagree.
+silently double-placed hits or clamped at render; r2); BPM canonically
+hundredth-quantized with a repair diagnostic (`tempo: 100.001` used to
+parse and be silently rewritten to `100.00` by the first fmt; r3,
+Sol+J2 concur on quantize-over-preserve); and kit programs required 0
+in source (the text has no slot — `drums:kit`; measured GM2 kit
+selects stay on the compiled layer and quantize away in `from_qsong`;
+r4). All reject-only-pathological: no corpus file, ingest output, or
+roundtrip behavior changed. Documented in FORMAT.md. Record closed.
 
 **Triage-3 architectural note (no action):** every remaining r3 bug
 lived in a public raw field encoding a constrained domain (`tonic_pc`,

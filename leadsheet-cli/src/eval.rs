@@ -26,7 +26,11 @@
 //!   first N bars equal
 //! - `{"type":"top_line_unchanged","track":T}` — the highest pitch at
 //!   each onset is preserved (reharmonization keeps the melody)
-//! - `{"type":"matches","file":F}` — note-exact equality with F
+//! - `{"type":"matches","file":F}` — note-exact equality with F,
+//!   velocity included; add `"velocity": false` for tasks that
+//!   intentionally permit dynamic variation (B1: the default named
+//!   "matches" must not silently exclude an expressive dimension the
+//!   format represents)
 //! - `{"type":"transcription_snaps"}` — expected-behavior fixture (D3):
 //!   render → ingest → quantize snaps the input's sub-16th content onto
 //!   the 16th grid (authoring resolution ≠ transcription resolution)
@@ -155,7 +159,7 @@ fn check_task(task: &Path) -> Result<Vec<CheckResult>> {
                     "matches" => {
                         let f = c["file"].as_str().context("file")?;
                         let target = parse::parse(&std::fs::read_to_string(task.join(f))?)?;
-                        matches_exactly(q, &target)
+                        matches_exactly(q, &target, c["velocity"].as_bool().unwrap_or(true))
                     }
                     _ => bail!("unknown constraint type {other:?}"),
                 }
@@ -168,17 +172,33 @@ fn check_task(task: &Path) -> Result<Vec<CheckResult>> {
 
 /// Note-exact equality in BOTH directions (C1): a canonical map per
 /// side, so an invented extra track fails just like a missing one.
-/// Header tempo/key are deliberately out of scope — `matches` checks
-/// musical content; header constraints can become their own type when a
-/// task needs them (meter is covered indirectly: it shifts `n_bars`).
-fn matches_exactly(q: &QSong, target: &QSong) -> (bool, Option<String>) {
+/// Velocity is part of exactness by default (B1, decided 2026-07-13);
+/// `vel_sensitive: false` is the per-task opt-out for tasks that
+/// intentionally permit dynamic variation. Header tempo/key are
+/// deliberately out of scope — `matches` checks musical content; header
+/// constraints can become their own type when a task needs them (meter
+/// is covered indirectly: it shifts `n_bars`).
+fn matches_exactly(q: &QSong, target: &QSong, vel_sensitive: bool) -> (bool, Option<String>) {
     if q.n_bars != target.n_bars {
         return (false, Some(format!("{} bars, wanted {}", q.n_bars, target.n_bars)));
     }
     let map = |q: &QSong| -> std::collections::BTreeMap<String, (u8, bool, Vec<NoteKey>)> {
         q.tracks
             .iter()
-            .map(|t| (t.name.clone(), (t.program, t.is_drums, t.notes.iter().map(key).collect())))
+            .map(|t| {
+                let notes = t
+                    .notes
+                    .iter()
+                    .map(key)
+                    .map(|mut k| {
+                        if !vel_sensitive {
+                            k.4 = 0;
+                        }
+                        k
+                    })
+                    .collect();
+                (t.name.clone(), (t.program, t.is_drums, notes))
+            })
             .collect()
     };
     let (got, want) = (map(q), map(target));
@@ -200,13 +220,14 @@ fn matches_exactly(q: &QSong, target: &QSong) -> (bool, Option<String>) {
     (true, None)
 }
 
-/// NB: velocity is currently NOT part of the key — mangled dynamics pass
-/// `matches`. Open policy decision (B4, PLAN.md Phase 4); settle before
-/// the eval runs.
-type NoteKey = (u8, i64, i64, u8);
+/// Velocity is part of note identity (B1, Gio 2026-07-13): every
+/// note-comparing constraint is velocity-sensitive — an edit that
+/// preserves pitches but destroys dynamics is not "unchanged". Only
+/// `matches` offers a per-task opt-out.
+type NoteKey = (u8, i64, i64, u8, u8);
 
 fn key(n: &leadsheet_core::grid::QNote) -> NoteKey {
-    (n.pitch, n.onset.ticks(), n.dur.ticks(), n.strokes)
+    (n.pitch, n.onset.ticks(), n.dur.ticks(), n.strokes, n.vel)
 }
 
 fn notes_of(q: &QSong, track: &str) -> Vec<NoteKey> {
@@ -245,7 +266,7 @@ fn pitch_shift(inp: &QSong, out: &QSong, track: &str, semis: i32) -> (bool, Opti
         return (false, Some(format!("{} notes, wanted {}", b.len(), a.len())));
     }
     let shifted: Vec<NoteKey> =
-        a.iter().map(|(p, o, d, s)| ((*p as i32 + semis) as u8, *o, *d, *s)).collect();
+        a.iter().map(|(p, o, d, s, v)| ((*p as i32 + semis) as u8, *o, *d, *s, *v)).collect();
     (shifted == b, Some("rhythm or interval mismatch".into()))
 }
 
