@@ -582,7 +582,7 @@ fn validate_header(h: &Header) -> Result<(), Error> {
     if let Some(k) = h.key
         && k.tonic_pc >= 12
     {
-        return Err(doc_err(format!("key tonic pitch class {} out of range (0..12)", k.tonic_pc)));
+        return Err(doc_err(format!("key tonic pitch class {} out of range (0..=11)", k.tonic_pc)));
     }
     if h.meter.0 == 0 || h.meter.0 > 64 {
         return Err(doc_err(format!("meter numerator {} out of range (1..=64)", h.meter.0)));
@@ -649,7 +649,7 @@ fn validate_body(
                             // as a different Document — silent mutation.
                             if sym.root_pc >= 12 || sym.bass_pc >= 12 {
                                 return Err(doc_err(format!(
-                                    "{who}: chord pitch class out of range (0..12)"
+                                    "{who}: chord pitch class out of range (0..=11)"
                                 )));
                             }
                             if sym.quality >= chord::QUALITIES.len() {

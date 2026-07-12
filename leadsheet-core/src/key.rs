@@ -4,7 +4,7 @@ use crate::grid::QSong;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Key {
-    /// Pitch class 0..12 (C = 0). `validate()` rejects anything else on
+    /// Pitch class 0..=11 (C = 0). `validate()` rejects anything else on
     /// both layers; the helpers below are total (mod 12) regardless, so
     /// a hostile value can never panic past the boundary.
     pub tonic_pc: u8,

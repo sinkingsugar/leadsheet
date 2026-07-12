@@ -32,13 +32,13 @@ pub const DEFAULT_BASS_OCTAVE: i8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChordSym {
-    /// Pitch class 0..12 (C = 0). `Document::validate` rejects anything
+    /// Pitch class 0..=11 (C = 0). `Document::validate` rejects anything
     /// else: a noncanonical value (13 ≡ 1) would normalize through
     /// emission and reparse as a *different* Document.
     pub root_pc: u8,
     /// Index into [`QUALITIES`]; `Document::validate` rejects overshoot.
     pub quality: usize,
-    /// Lowest sounding pitch class 0..12; ≠ root_pc means a slash chord.
+    /// Lowest sounding pitch class 0..=11; ≠ root_pc means a slash chord.
     pub bass_pc: u8,
     /// Octave of the bass note (scientific, C4 = middle C).
     pub bass_octave: i8,

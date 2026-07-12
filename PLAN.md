@@ -307,6 +307,15 @@ same shape *again*, stop patching and constrain the types
 (`Key::new() -> Option<Key>`, checked `ChordSym` construction) — but
 not before eval data; no newtype festival.
 
+**Triage-4 amendment — the tripwire tripped** (r4 found the fourth
+instance: `program`). Consensus decision, recorded so a fifth round can
+hold us to it: the r4 domain rules shipped as one-line validate checks;
+**when the host API is productized (Phase 5 hosts / wasm bindings),
+smart constructors or private fields become the default** for `Key`,
+`ChordSym`, `Instrument`, and possibly validated `QNote` construction.
+Still not before eval data. Both hostile-mutation properties (Document
+and QSong) are the guard until then.
+
 ## Order & rationale (as it actually happened)
 
 **1 → 3a → 3b → 2 → 4 → 5.** Safety nets first (1) — proptest + golden

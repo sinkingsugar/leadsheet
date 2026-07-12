@@ -632,6 +632,13 @@ pub fn from_qsong(q: &QSong) -> Document {
 /// [`crate::parse::parse_document`] on canonical input, and the layout
 /// engine for both compressor output and `leadsheet fmt`
 /// (Document-canonical: author structure survives).
+///
+/// **Precondition:** the input must satisfy [`Document::validate`].
+/// Emission of an invalid Document may not reparse (`piano:255`,
+/// `tempo: NaN`) or may silently drift (`base_vel: 70` re-reads as
+/// `@mp` = 64) — the canonicality theorem only speaks for validated
+/// inputs. Parser output is always valid; host-built Documents must
+/// call `validate()` first.
 pub fn emit_document(d: &Document) -> String {
     let flats = d.header.key.map(|k| k.use_flats()).unwrap_or(false);
     let mut out = String::new();
@@ -800,6 +807,9 @@ fn emit_direct(out: &mut String, d: &Document, di: &DirectItem, flats: bool) {
 
 /// QSong → canonical text (the historical entry point): structure is
 /// invented by [`from_qsong`], spelled by [`emit_document`].
+///
+/// **Precondition:** the input must satisfy [`QSong::validate`]
+/// (quantizer/resolver output always does); see [`emit_document`].
 pub fn emit(q: &QSong) -> String {
     emit_document(&from_qsong(q))
 }
