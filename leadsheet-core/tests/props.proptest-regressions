@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 10123bcc5aecf8a6f634da02bfeea4a57cf6dee93cf5ff566ca4971fe98a0ba9 # shrinks to q = QSong { name: "a", bpm: 40.0, meter: (4, 4), key: None, swing: None, n_bars: 1, tracks: [QTrack { name: "t0", program: 0, is_drums: false, notes: [QNote { pitch: 24, cell: 0, dur_cells: 1, vel: 41 }, QNote { pitch: 25, cell: 0, dur_cells: 1, vel: 57 }, QNote { pitch: 24, cell: 14, dur_cells: 2, vel: 1 }, QNote { pitch: 25, cell: 14, dur_cells: 2, vel: 1 }, QNote { pitch: 26, cell: 14, dur_cells: 2, vel: 41 }] }] }
+cc c94d839dc0e0721e2caeb40ec12ba4a118fc0725a56d2f5733abbf1b8409e51b # shrinks to q = QSong { name: "a", bpm: 40.0, meter: (4, 4), key: None, swing: None, n_bars: 2, tracks: [QTrack { name: "t0", program: 0, is_drums: false, notes: [QNote { pitch: 25, cell: 0, dur_cells: 17, vel: 32 }, QNote { pitch: 24, cell: 13, dur_cells: 12, vel: 32 }, QNote { pitch: 24, cell: 29, dur_cells: 3, vel: 32 }] }] }
+cc a0c47e740480fcb99e600507cb84f7c15f6aefe874ae67408f56a36984f96984 # shrinks to q = QSong { name: "a", bpm: 40.0, meter: (4, 4), key: None, swing: None, n_bars: 2, tracks: [QTrack { name: "t0", program: 0, is_drums: false, notes: [QNote { pitch: 25, cell: 2, dur_cells: 16, vel: 1 }, QNote { pitch: 24, cell: 12, dur_cells: 5, vel: 1 }, QNote { pitch: 25, cell: 18, dur_cells: 14, vel: 1 }, QNote { pitch: 24, cell: 28, dur_cells: 4, vel: 1 }] }] }
