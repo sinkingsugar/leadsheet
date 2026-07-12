@@ -19,8 +19,14 @@ use std::fmt::Write;
 /// semantically identical.
 pub fn diff(a: &Document, b: &Document) -> String {
     let mut out = String::new();
-    let fa = a.header.key.map(|k| k.use_flats()).unwrap_or(false);
-    let fb = b.header.key.map(|k| k.use_flats()).unwrap_or(false);
+    // One spelling convention for both sides of every arrow (the edited
+    // document's key, D1): comparing per-side spellings made a key-only
+    // change (Am -> Dm) report every accidental-bearing bar as changed
+    // (^A vs _B) with identical pitches. Bars are compared *as spelled*,
+    // deliberately: two structures with one canonical spelling (an
+    // ungrouped tuplet run vs its group) are fmt-equivalent, and the
+    // diff contract is semantic identity, not byte identity.
+    let flats = b.header.key.or(a.header.key).map(|k| k.use_flats()).unwrap_or(false);
 
     // Header.
     if a.header.name != b.header.name {
@@ -73,7 +79,7 @@ pub fn diff(a: &Document, b: &Document) -> String {
             None => {
                 let _ = writeln!(out, "P{} removed", pa.id);
             }
-            Some(pb) => diff_pattern(&mut out, pa, pb, fa, fb),
+            Some(pb) => diff_pattern(&mut out, pa, pb, flats),
         }
     }
     for pb in &b.patterns {
@@ -151,7 +157,7 @@ fn row_text(r: &Row) -> String {
     if r.reps == 1 { format!("{label}[{stack}]") } else { format!("{label}[{stack}] x{}", r.reps) }
 }
 
-fn diff_pattern(out: &mut String, pa: &PatternDef, pb: &PatternDef, fa: bool, fb: bool) {
+fn diff_pattern(out: &mut String, pa: &PatternDef, pb: &PatternDef, flats: bool) {
     if pa.track != pb.track {
         let _ = writeln!(out, "P{}: instrument changed", pa.id);
     }
@@ -173,7 +179,7 @@ fn diff_pattern(out: &mut String, pa: &PatternDef, pb: &PatternDef, fa: bool, fb
             for i in 0..ba.len().max(bb.len()) {
                 match (ba.get(i), bb.get(i)) {
                     (Some(x), Some(y)) => {
-                        let (sx, sy) = (spell_melodic_bar(x, fa), spell_melodic_bar(y, fb));
+                        let (sx, sy) = (spell_melodic_bar(x, flats), spell_melodic_bar(y, flats));
                         if sx != sy {
                             let _ =
                                 writeln!(out, "P{} bar {}: | {} | -> | {} |", pa.id, i + 1, sx, sy);
@@ -185,7 +191,7 @@ fn diff_pattern(out: &mut String, pa: &PatternDef, pb: &PatternDef, fa: bool, fb
                             "P{} bar {} removed: | {} |",
                             pa.id,
                             i + 1,
-                            spell_melodic_bar(x, fa)
+                            spell_melodic_bar(x, flats)
                         );
                     }
                     (None, Some(y)) => {
@@ -194,7 +200,7 @@ fn diff_pattern(out: &mut String, pa: &PatternDef, pb: &PatternDef, fa: bool, fb
                             "P{} bar {} added: | {} |",
                             pa.id,
                             i + 1,
-                            spell_melodic_bar(y, fb)
+                            spell_melodic_bar(y, flats)
                         );
                     }
                     (None, None) => unreachable!(),
@@ -203,8 +209,8 @@ fn diff_pattern(out: &mut String, pa: &PatternDef, pb: &PatternDef, fa: bool, fb
         }
         (PatternBody::Chordal(ba), PatternBody::Chordal(bb)) => {
             for i in 0..ba.len().max(bb.len()) {
-                let sx = ba.get(i).map(|c| spell_chordal_bar(c, fa));
-                let sy = bb.get(i).map(|c| spell_chordal_bar(c, fb));
+                let sx = ba.get(i).map(|c| spell_chordal_bar(c, flats));
+                let sy = bb.get(i).map(|c| spell_chordal_bar(c, flats));
                 if sx != sy {
                     let show = |s: Option<String>| s.unwrap_or_else(|| "(none)".into());
                     let _ = writeln!(

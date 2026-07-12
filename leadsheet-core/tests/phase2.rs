@@ -346,6 +346,30 @@ arrangement:
     assert!(report.contains("P3: kin ~P1 -> -"), "{report}");
 }
 
+/// D1: a key-only change must not spray spelling noise — pitches are
+/// identical, only the accidental convention moved. The key line itself
+/// is the whole report.
+#[test]
+fn semantic_diff_ignores_spelling_across_key_changes() {
+    let sharp_side = "\
+# song: s  tempo: 100.00  meter: 4/4  key: Am  grid: 1/16
+# instruments: p:0
+P1 p | ^A4 ^C4 ^F4 ^G4 |
+arrangement:
+  [P1]
+";
+    let flat_side = sharp_side.replace("key: Am", "key: Dm");
+    let (a, b) = (doc(sharp_side), doc(&flat_side));
+    let report = diff::diff(&a, &b);
+    assert!(report.contains("key: Am -> Dm"), "{report}");
+    assert!(!report.contains("bar"), "identical pitches must not report:\n{report}");
+    // And a real pitch change still shows, spelled in one convention.
+    let changed = flat_side.replace("^A4 ^C4", "^A4 D4");
+    let report = diff::diff(&a, &doc(&changed));
+    assert!(report.contains("P1 bar 1"), "{report}");
+    assert!(!report.contains("^C"), "one spelling convention on both sides:\n{report}");
+}
+
 #[test]
 fn semantic_diff_reports_at_the_right_granularity() {
     let edited = AUTHOR
