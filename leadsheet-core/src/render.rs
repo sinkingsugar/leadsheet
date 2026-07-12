@@ -53,17 +53,31 @@ pub fn render(q: &QSong) -> Vec<u8> {
         let mut events: Vec<(u32, u8, MidiMessage)> = Vec::with_capacity(track.notes.len() * 2);
         for n in &track.notes {
             let start = n.cell * TICKS_PER_CELL;
-            let end = (n.cell + n.dur_cells) * TICKS_PER_CELL;
-            events.push((
-                start,
-                1,
-                MidiMessage::NoteOn { key: u7::new(n.pitch), vel: u7::new(n.vel.clamp(1, 127)) },
-            ));
-            events.push((
-                end,
-                0, // offs before ons at the same tick, so repeated notes don't collapse
-                MidiMessage::NoteOff { key: u7::new(n.pitch), vel: u7::new(0) },
-            ));
+            // For drums, dur_cells is a stroke count: the cell subdivides
+            // into that many hits (drag / triplet / buzz).
+            let strokes = if track.is_drums { n.dur_cells.clamp(1, 4) } else { 1 };
+            let step = TICKS_PER_CELL / strokes;
+            for k in 0..strokes {
+                let on = start + k * step;
+                let off = if track.is_drums {
+                    on + step / 2
+                } else {
+                    (n.cell + n.dur_cells) * TICKS_PER_CELL
+                };
+                events.push((
+                    on,
+                    1,
+                    MidiMessage::NoteOn {
+                        key: u7::new(n.pitch),
+                        vel: u7::new(n.vel.clamp(1, 127)),
+                    },
+                ));
+                events.push((
+                    off.max(on + 1),
+                    0, // offs before ons at the same tick, so repeats don't collapse
+                    MidiMessage::NoteOff { key: u7::new(n.pitch), vel: u7::new(0) },
+                ));
+            }
         }
         events.sort_by_key(|(tick, order, msg)| {
             let key = match msg {

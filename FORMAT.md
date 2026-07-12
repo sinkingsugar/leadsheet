@@ -98,6 +98,11 @@ P3 drums@f
   default — MuScriptor transcriptions carry no velocity.
 - Melodic/chordal notes: `>` accent (+16), `~` ghost (−24). Drum lanes:
   `X` accent, `x` normal, `o` ghost.
+- Drum subdivision below the 16th grid, per cell: `2` = two 32nd strokes
+  (drag/roll), `3` = triplet strokes, `4` = four 64ths (buzz). A 32nd-note
+  snare roll is `S |2222 2222 2222 2222|`. Strokes play at the pattern's
+  base dynamic. (Melodic 32nds via `/` fractions are planned; they need
+  the internal clock refactored first.)
 - Compression is lossy by bucket: each bar's base is the bucketed median
   velocity; notes ≥12 above it emit `>`, ≥16 below emit `~`. A file with
   constant velocity emits no marks at all.

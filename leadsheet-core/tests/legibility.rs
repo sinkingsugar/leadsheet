@@ -305,6 +305,41 @@ fn dynamics_emit_and_roundtrip() {
 }
 
 #[test]
+fn drum_stroke_density_roundtrips() {
+    // `2`/`3`/`4` lane cells: drags, triplet strokes, buzzes.
+    let text = "\
+# song: rolls  tempo: 110.00  meter: 4/4  grid: 1/16
+# instruments: drums:kit
+
+P1 drums
+  K |x... .... x... ....|
+  S |.... 2.2. .... 3344|
+
+arrangement:
+  [P1]
+";
+    let q = parse::parse(text).unwrap();
+    let drums = &q.tracks[0];
+    let strokes: Vec<(u32, u32)> = drums
+        .notes
+        .iter()
+        .filter(|n| n.pitch == 38)
+        .map(|n| (n.cell, n.dur_cells))
+        .collect();
+    assert_eq!(strokes, [(4, 2), (6, 2), (12, 3), (13, 3), (14, 4), (15, 4)]);
+    assert_eq!(q.n_bars, 1, "stroke counts are not extents");
+    // Canonical emit reproduces the digits.
+    let text2 = emit::emit(&q);
+    assert!(text2.contains("2.2."), "{text2}");
+    assert!(text2.contains("3344"), "{text2}");
+    assert_eq!(emit::emit(&parse::parse(&text2).unwrap()), text2);
+    // Render subdivides: 2+2+3+3+4+4 = 18 snare hits + 2 kicks.
+    let midi = render::render(&q);
+    let back = ingest::ingest_midi(&midi, "x").unwrap();
+    assert_eq!(back.note_count(), 18 + 2);
+}
+
+#[test]
 fn chord_holds_accumulate_duration() {
     let text = "\
 # song: hold  tempo: 90.00  meter: 4/4  grid: 1/16

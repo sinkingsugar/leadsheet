@@ -51,9 +51,25 @@ fn base_velocity(segs: &[Seg]) -> u8 {
 }
 
 /// Split a track's notes at bar boundaries: per-bar segment lists.
+/// Drum notes never span: their `dur_cells` is a stroke count (see
+/// [`crate::grid::QNote`]), carried through in `Seg::dur`.
 fn split_bars(track: &QTrack, cells_per_bar: u32, n_bars: u32) -> Vec<Vec<Seg>> {
     let mut bars: Vec<Vec<Seg>> = (0..n_bars).map(|_| Vec::new()).collect();
     for n in &track.notes {
+        if track.is_drums {
+            let bar = n.cell / cells_per_bar;
+            if let Some(slot) = bars.get_mut(bar as usize) {
+                slot.push(Seg {
+                    cell: n.cell - bar * cells_per_bar,
+                    dur: n.dur_cells,
+                    pitch: n.pitch,
+                    vel: n.vel,
+                    tie_in: false,
+                    tie_out: false,
+                });
+            }
+            continue;
+        }
         let end = n.cell + n.dur_cells;
         let mut cell = n.cell;
         while cell < end {
@@ -171,11 +187,15 @@ fn try_chordal(segs: &[Seg], cells_per_bar: u32, flats: bool) -> Option<String> 
     Some(cols.join(" "))
 }
 
-/// Drum lane cell: empty / ghost / hit / accent.
+/// Drum lane cell: empty / ghost / hit / accent, or a multi-stroke
+/// subdivision (drag, triplet, buzz) filling the cell.
 pub(crate) const LANE_EMPTY: u8 = 0;
 pub(crate) const LANE_GHOST: u8 = 1;
 pub(crate) const LANE_HIT: u8 = 2;
 pub(crate) const LANE_ACCENT: u8 = 3;
+pub(crate) const LANE_D2: u8 = 4; // two 32nd strokes
+pub(crate) const LANE_D3: u8 = 5; // triplet strokes
+pub(crate) const LANE_D4: u8 = 6; // four 64th strokes
 
 type Lanes = BTreeMap<u8, Vec<u8>>;
 
@@ -184,6 +204,9 @@ fn lane_char(code: u8) -> char {
         LANE_GHOST => 'o',
         LANE_HIT => 'x',
         LANE_ACCENT => 'X',
+        LANE_D2 => '2',
+        LANE_D3 => '3',
+        LANE_D4 => '4',
         _ => '.',
     }
 }
@@ -192,10 +215,15 @@ fn lane_char(code: u8) -> char {
 fn drum_lane_map(segs: &[Seg], cells_per_bar: u32, base: u8) -> Lanes {
     let mut lanes: Lanes = BTreeMap::new();
     for s in segs {
-        let code = match notation::mark_for_vel(s.vel, base) {
-            notation::Mark::Accent => LANE_ACCENT,
-            notation::Mark::Ghost => LANE_GHOST,
-            notation::Mark::None => LANE_HIT,
+        let code = match s.dur {
+            2 => LANE_D2,
+            3 => LANE_D3,
+            d if d >= 4 => LANE_D4,
+            _ => match notation::mark_for_vel(s.vel, base) {
+                notation::Mark::Accent => LANE_ACCENT,
+                notation::Mark::Ghost => LANE_GHOST,
+                notation::Mark::None => LANE_HIT,
+            },
         };
         lanes.entry(s.pitch).or_insert_with(|| vec![LANE_EMPTY; cells_per_bar as usize])
             [s.cell as usize] = code;

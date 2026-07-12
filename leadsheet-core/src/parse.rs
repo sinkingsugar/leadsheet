@@ -217,16 +217,19 @@ impl Builder {
     fn apply_drums(&mut self, ti: usize, bar_start: u32, lanes: &[(u8, Vec<u8>)], base: u8) {
         for (pitch, cells) in lanes {
             for (i, code) in cells.iter().enumerate() {
-                let vel = match *code {
-                    LANE_ACCENT => notation::apply_mark(base, Mark::Accent),
-                    LANE_GHOST => notation::apply_mark(base, Mark::Ghost),
-                    LANE_HIT => base,
+                let (vel, strokes) = match *code {
+                    LANE_ACCENT => (notation::apply_mark(base, Mark::Accent), 1),
+                    LANE_GHOST => (notation::apply_mark(base, Mark::Ghost), 1),
+                    LANE_HIT => (base, 1),
+                    LANE_D2 => (base, 2),
+                    LANE_D3 => (base, 3),
+                    LANE_D4 => (base, 4),
                     _ => continue,
                 };
                 self.tracks[ti].notes.push(QNote {
                     pitch: *pitch,
                     cell: bar_start + i as u32,
-                    dur_cells: 1,
+                    dur_cells: strokes, // stroke count for drums, not an extent
                     vel,
                 });
             }
@@ -257,6 +260,9 @@ const LANE_EMPTY: u8 = 0;
 const LANE_GHOST: u8 = 1;
 const LANE_HIT: u8 = 2;
 const LANE_ACCENT: u8 = 3;
+const LANE_D2: u8 = 4;
+const LANE_D3: u8 = 5;
+const LANE_D4: u8 = 6;
 
 /// Check melodic token syntax and bar-sum without placing notes.
 fn validate_melodic(content: &str, cpb: u32) -> Result<(), String> {
@@ -321,6 +327,9 @@ fn parse_lane_cells(content: &str, cpb: u32) -> Result<Vec<u8>, String> {
             'x' => cells.push(LANE_HIT),
             'X' => cells.push(LANE_ACCENT),
             'o' => cells.push(LANE_GHOST),
+            '2' => cells.push(LANE_D2),
+            '3' => cells.push(LANE_D3),
+            '4' => cells.push(LANE_D4),
             '.' | '-' => cells.push(LANE_EMPTY),
             c if c.is_whitespace() => {}
             c => return Err(format!("bad lane char {c:?}")),
@@ -585,7 +594,9 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
     for t in &mut b.tracks {
         t.notes.sort_by(|a, b| a.cell.cmp(&b.cell).then(a.pitch.cmp(&b.pitch)));
         for n in &t.notes {
-            max_end = max_end.max(n.cell + n.dur_cells);
+            // Drum dur_cells is a stroke count inside one cell.
+            let extent = if t.is_drums { 1 } else { n.dur_cells };
+            max_end = max_end.max(n.cell + extent);
         }
     }
     Ok(QSong {
