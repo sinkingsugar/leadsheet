@@ -13,24 +13,24 @@
 //!    never produces it; single-stroke drums — subdivisions live below
 //!    the grid and re-quantize onto neighbouring cells by design).
 //!
-//! All three properties are `#[ignore]`d: they fail against current
-//! production, exposing three canonicality bugs (reported 2026-07-12,
-//! candidate fixes verified against 4000 cases per property — see the
-//! session report; fixes not applied pending Gio's review):
+//! These properties originally exposed three canonicality bugs (found
+//! 2026-07-12), fixed on this branch:
 //!
-//! 1. `parse` holds a single open tie per (track, pitch), so a doubled
-//!    pitch in a tied chord (`[EE]16-`) loses one continuation.
-//! 2. `parse` *consumes* a tie registration even when its end cell doesn't
+//! 1. `parse` held a single open tie per (track, pitch), so a doubled
+//!    pitch in a tied chord (`[EE]16-`) lost one continuation — the tie
+//!    map now holds a list, matched by end cell.
+//! 2. `parse` *consumed* a tie registration even when its end cell didn't
 //!    match the cursor, so a later same-pitch token in an earlier voice
-//!    steals the continuation and splits the note.
-//! 3. `emit` derives a bar's `@dyn` base from the median of *note*
+//!    stole the continuation and split the note — non-matching entries
+//!    now stay registered.
+//! 3. `emit` derived a bar's `@dyn` base from the median of *note*
 //!    velocities while marks are per token *group* (a chord = one mark),
-//!    and lets tie-in segments vote with raw velocities parse can't
-//!    reconstruct — so a second generation can re-bucket the base.
+//!    and let tie-in segments vote with raw velocities parse can't
+//!    reconstruct — the base is now the median over group votes, with
+//!    tie-in segments voting at their reconstructed velocity.
 //!
-//! Failing seeds are pinned in `props.proptest-regressions`; run
-//! `cargo test --test props -- --include-ignored` to reproduce. The two
-//! named reproducers at the bottom are the minimal cases for bugs 1 and 2.
+//! The original failing seeds stay pinned in `props.proptest-regressions`;
+//! the named reproducers at the bottom are the minimal cases for 1 and 2.
 
 use leadsheet_core::grid::{QNote, QSong, QTrack, QuantizeOptions, Swing};
 use leadsheet_core::key::Key;
@@ -191,7 +191,9 @@ fn arb_track(cfg: GenCfg, cpb: u32, n_bars: u32) -> impl Strategy<Value = TrackG
 }
 
 /// Instantiate a track's bar choices into a valid QTrack: notes clipped to
-/// the song, same-pitch overlaps dropped (see module doc), sorted like the
+/// the song, same-pitch overlaps dropped (a lane cell holds one drum hit,
+/// and overlapping equal pitches are one voice on one instrument — not a
+/// case the format promises to preserve), sorted like the
 /// quantizer sorts.
 fn assemble(cfg: GenCfg, t: &TrackGen, idx: usize, cpb: u32, n_bars: u32) -> QTrack {
     let total = n_bars * cpb;
@@ -264,7 +266,6 @@ fn must_parse(text: &str) -> Result<QSong, TestCaseError> {
 proptest! {
     /// THE primary invariant: emission is canonical, byte for byte.
     #[test]
-    #[ignore = "exposes canonicality bugs 1-3 (module doc); candidate fix pending review"]
     fn emission_is_canonical(q in arb_qsong(CANONICAL)) {
         let t1 = emit::emit(&q);
         let q2 = must_parse(&t1)?;
@@ -274,7 +275,6 @@ proptest! {
 
     /// With velocities constrained to buckets, parse is an exact inverse.
     #[test]
-    #[ignore = "exposes canonicality bug 2 (module doc); candidate fix pending review"]
     fn parse_is_structural_inverse_on_bucketed_input(q in arb_qsong(STRUCTURAL)) {
         let text = emit::emit(&q);
         let q2 = must_parse(&text)?;
@@ -295,7 +295,6 @@ proptest! {
 
     /// Already-quantized input survives the full compiled loop exactly.
     #[test]
-    #[ignore = "exposes canonicality bug 2 (module doc); candidate fix pending review"]
     fn compiled_roundtrip_is_exact(
         q in arb_qsong(COMPILED)
             .prop_filter("needs notes", |q| q.tracks.iter().any(|t| !t.notes.is_empty()))
@@ -315,10 +314,8 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// Reported canonicality bugs: smallest reproducers, kept ignored until the
-// fix is decided. Both break because `parse`'s `open_ties` map (a) holds a
-// single open tie per (track, pitch) and (b) `remove()`s an entry even when
-// its end doesn't match the cursor.
+// Minimal reproducers for the two tie-tracking bugs (module doc, 1 and 2);
+// regressions now that `open_ties` holds a list matched by end cell.
 
 fn one_track(notes: Vec<QNote>, n_bars: u32) -> QSong {
     QSong {
@@ -341,7 +338,6 @@ fn assert_canonical(q: &QSong) {
 /// `[EE]16-`: two identical simultaneous notes tied across the barline.
 /// Second generation splits them into `E16 & E16-`.
 #[test]
-#[ignore = "known parse bug (single open tie per pitch), reported 2026-07-12"]
 fn dup_pitch_tied_chord_is_canonical() {
     let n = |cell: u32, dur: u32| QNote { pitch: 64, cell, dur_cells: dur, vel: 96 };
     assert_canonical(&one_track(vec![n(0, 20), n(0, 20)], 2));
@@ -350,7 +346,6 @@ fn dup_pitch_tied_chord_is_canonical() {
 /// `C16- & z4 C4 z8`: the inner overlapping note consumes the outer note's
 /// tie registration; the tie never joins and gen-2 drops the `-`.
 #[test]
-#[ignore = "known parse bug (tie registration consumed on mismatch), reported 2026-07-12"]
 fn same_pitch_overlap_tie_is_canonical() {
     let n = |cell: u32, dur: u32| QNote { pitch: 60, cell, dur_cells: dur, vel: 96 };
     assert_canonical(&one_track(vec![n(0, 20), n(4, 4)], 2));

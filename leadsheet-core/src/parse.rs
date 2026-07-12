@@ -184,8 +184,10 @@ struct DrumBlock {
 struct Builder {
     tracks: Vec<QTrack>,
     track_index: HashMap<String, usize>,
-    /// Open ties per (track, pitch): (index into track notes, end cell so far).
-    open_ties: HashMap<(usize, u8), (usize, u32)>,
+    /// Open ties per (track, pitch): (index into track notes, end cell so
+    /// far). Several can be open at once (doubled pitches in a chord), so
+    /// continuations match by end cell.
+    open_ties: HashMap<(usize, u8), Vec<(usize, u32)>>,
 }
 
 impl Builder {
@@ -222,12 +224,17 @@ impl Builder {
                 for pitch in pitches {
                     let key = (ti, pitch);
                     // Continuation of a tied note joins it; else a new note.
-                    let idx = match self.open_ties.remove(&key) {
-                        Some((idx, end)) if end == cursor => {
+                    // Only a tie ending exactly at the cursor is consumed —
+                    // other open ties on this pitch stay registered.
+                    let open = self.open_ties.get_mut(&key).and_then(|v| {
+                        v.iter().position(|&(_, end)| end == cursor).map(|i| v.swap_remove(i).0)
+                    });
+                    let idx = match open {
+                        Some(idx) => {
                             self.tracks[ti].notes[idx].dur_cells += dur;
                             idx
                         }
-                        _ => {
+                        None => {
                             self.tracks[ti].notes.push(QNote {
                                 pitch,
                                 cell: cursor,
@@ -238,7 +245,7 @@ impl Builder {
                         }
                     };
                     if tie {
-                        self.open_ties.insert(key, (idx, cursor + dur));
+                        self.open_ties.entry(key).or_default().push((idx, cursor + dur));
                     }
                 }
                 cursor += dur;
