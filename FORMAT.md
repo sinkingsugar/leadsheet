@@ -32,7 +32,9 @@ arrangement:
   pushes every offbeat 8th to 66% through its beat (50 = straight,
   66 = triplet shuffle); `swing: 16th 58%` swings the offbeat 16ths
   instead. Range 50–75%. Notation stays on the straight grid — the feel
-  is a render property, like a drummer interpreting the chart.
+  is a render property, like a drummer interpreting the chart. A swung
+  note keeps its notated duration (the whole note shifts, as a player
+  would), so it may overlap the next straight onset by the swing amount.
 - `# instruments: name:PROGRAM ...` — GM program number, or `kit` for the
   drum channel. Declaration order is track order.
 - Any other `#` line is a comment.
@@ -66,7 +68,9 @@ bar lines — restate the chord).
   marks allowed, no durations, no nesting; the arity must match the
   member count and divide the span evenly. Tie the whole group with `-`
   after the span: `(3 C E G)4-`. Runs of equal triplet-length notes
-  written as fractions (`C4/3 D4/3 E4/3`) canonicalize to the group form.
+  written as fractions (`C4/3 D4/3 E4/3`) canonicalize to the group form;
+  conversely a group with trailing rests may respell as fractions (the
+  rest merges with whatever silence follows) — timing is unchanged.
 - `z2` = rest. `[CEG]4` = simultaneous notes (exact pitches, any content).
 - `-` = tie into the next bar: `C8-` … next bar `C4` continues the note.
 - ` & ` separates overlapping voices within a bar (sustained note under a

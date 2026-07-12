@@ -32,7 +32,7 @@ pub fn render(q: &QSong) -> Vec<u8> {
     let mut smf = Smf::new(Header::new(Format::Parallel, Timing::Metrical(u15::new(PPQ))));
 
     // Conductor track: tempo + time signature.
-    let us_per_qn = (60e6 / q.bpm).round() as u32;
+    let us_per_qn = (60e6 / q.bpm).round().clamp(1.0, 16_777_215.0) as u32;
     smf.tracks.push(vec![
         TrackEvent {
             delta: u28::new(0),
@@ -73,8 +73,10 @@ pub fn render(q: &QSong) -> Vec<u8> {
             let step = n.dur.ticks() as u32 / strokes;
             for k in 0..strokes {
                 let on = start + k * step;
-                let off =
-                    if track.is_drums { on + step / 2 } else { (n.onset + n.dur).ticks() as u32 };
+                // Swing shifts the whole note (B4: player-like — the
+                // notated duration is preserved, even if that overlaps the
+                // next straight onset).
+                let off = if track.is_drums { on + step / 2 } else { start + n.dur.ticks() as u32 };
                 events.push((
                     on,
                     1,

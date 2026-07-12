@@ -57,8 +57,10 @@ pub enum Tok {
         dur: MusicalTime,
     },
     /// `(n M M …)S`: n members evenly dividing a span of S cells. Members
-    /// are bare pitches / chords / rests (marks allowed, no durations);
-    /// `tie` carries the group-final `-` into the next token/bar.
+    /// are bare pitches / chords / rests (marks allowed, no spelled
+    /// durations) whose `dur` field always carries the real member length,
+    /// span/n — on the parse side and the detection side alike. `tie`
+    /// carries the group-final `-` into the next token/bar.
     Tuplet {
         n: u32,
         members: Vec<Tok>,
@@ -334,6 +336,15 @@ pub fn parse_tokens(voice: &str) -> Result<Vec<Tok>, String> {
             if tie && matches!(members.last(), Some(Tok::Rest { .. })) {
                 return Err("a tuplet ending in a rest cannot be tied".into());
             }
+            let step = MusicalTime(span.ticks() / n as i64);
+            for m in &mut members {
+                match m {
+                    Tok::Note { dur, .. } | Tok::Chord { dur, .. } | Tok::Rest { dur } => {
+                        *dur = step;
+                    }
+                    Tok::Tuplet { .. } => unreachable!("parse_member rejects nesting"),
+                }
+            }
             out.push(Tok::Tuplet { n, members, span, tie });
             continue;
         }
@@ -494,7 +505,12 @@ pub fn emit_token_spelled(tok: &Tok, flats: bool) -> String {
                 }
             }
             s.push(')');
-            s.push_str(&(span.ticks() / TICKS_PER_SIXTEENTH).to_string());
+            let sp = dur_text(*span);
+            if sp.is_empty() {
+                s.push('1');
+            } else {
+                s.push_str(&sp);
+            }
             if *tie {
                 s.push('-');
             }

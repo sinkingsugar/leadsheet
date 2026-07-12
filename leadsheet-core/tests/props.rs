@@ -34,7 +34,7 @@
 
 use leadsheet_core::grid::{MusicalTime, QNote, QSong, QTrack, QuantizeOptions, Swing};
 use leadsheet_core::key::Key;
-use leadsheet_core::{chord, emit, ingest, metrics, parse, render};
+use leadsheet_core::{chord, emit, ingest, metrics, notation, parse, render};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use std::collections::HashMap;
@@ -410,4 +410,78 @@ fn dup_pitch_tied_chord_is_canonical() {
 fn same_pitch_overlap_tie_is_canonical() {
     let n = |cell: u32, dur: u32| QNote::from_cells(60, cell, dur, 96);
     assert_canonical(&one_track(vec![n(0, 20), n(4, 4)], 2));
+}
+
+// ---------------------------------------------------------------------------
+// Token-level totality: any valid Tok has exactly one spelling that reads
+// back as itself — arbitrary tick durations (fractions in lowest terms)
+// and tuplet groups with arbitrary spans, fractional included.
+
+fn arb_member() -> impl Strategy<Value = notation::Tok> {
+    use notation::{Mark, Tok};
+    let mark = prop::sample::select(vec![Mark::None, Mark::Accent, Mark::Ghost]);
+    prop_oneof![
+        3 => (24u8..=96, mark.clone()).prop_map(|(pitch, mark)| Tok::Note {
+            pitch,
+            dur: MusicalTime(240),
+            tie: false,
+            mark,
+        }),
+        1 => (prop::collection::btree_set(24u8..=96, 2..=3), mark).prop_map(|(ps, mark)| {
+            Tok::Chord { pitches: ps.into_iter().collect(), dur: MusicalTime(240), tie: false, mark }
+        }),
+        1 => Just(Tok::Rest { dur: MusicalTime(240) }),
+    ]
+}
+
+fn arb_tok() -> impl Strategy<Value = notation::Tok> {
+    use notation::{Mark, Tok};
+    let mark = prop::sample::select(vec![Mark::None, Mark::Accent, Mark::Ghost]);
+    prop_oneof![
+        3 => (24u8..=96, 1i64..=4000, any::<bool>(), mark.clone()).prop_map(
+            |(pitch, t, tie, mark)| Tok::Note { pitch, dur: MusicalTime(t), tie, mark }
+        ),
+        2 => (
+            prop::collection::btree_set(24u8..=96, 2..=4),
+            1i64..=4000,
+            any::<bool>(),
+            mark,
+        )
+            .prop_map(|(ps, t, tie, mark)| Tok::Chord {
+                pitches: ps.into_iter().collect(),
+                dur: MusicalTime(t),
+                tie,
+                mark,
+            }),
+        1 => (1i64..=4000).prop_map(|t| Tok::Rest { dur: MusicalTime(t) }),
+        2 => (2u32..=24, 1i64..=960, any::<bool>()).prop_flat_map(|(n, step, tie)| {
+            prop::collection::vec(arb_member(), n as usize..=n as usize).prop_map(
+                move |mut members| {
+                    let step = MusicalTime(step);
+                    for m in &mut members {
+                        match m {
+                            Tok::Note { dur, .. }
+                            | Tok::Chord { dur, .. }
+                            | Tok::Rest { dur } => *dur = step,
+                            Tok::Tuplet { .. } => unreachable!(),
+                        }
+                    }
+                    let tie = tie && !matches!(members.last(), Some(Tok::Rest { .. }));
+                    Tok::Tuplet { n, members, span: step * n as i64, tie }
+                },
+            )
+        }),
+    ]
+}
+
+proptest! {
+    /// Every token — fractional durations, tuplet groups with fractional
+    /// spans — spells to text that parses back to the identical Tok.
+    #[test]
+    fn token_spelling_is_total_and_invertible(t in arb_tok()) {
+        let s = notation::emit_token(&t);
+        let back = notation::parse_tokens(&s)
+            .map_err(|e| TestCaseError::fail(format!("{s:?} failed to parse: {e}")))?;
+        prop_assert_eq!(&back, &std::slice::from_ref(&t), "via {}", &s);
+    }
 }

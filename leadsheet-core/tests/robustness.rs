@@ -156,3 +156,21 @@ fn generous_but_bounded() {
     let odd_meter = "# song: x  tempo: 120  meter: 15/8\n# instruments: p:0\nb1 p | z30 |\n";
     assert_eq!(parse::parse(odd_meter).unwrap().meter, (15, 8));
 }
+
+/// Parser-valid extremes must render without panicking (B3: MIDI tempo is
+/// a 24-bit µs/quarter field — unrepresentable BPMs clamp).
+#[test]
+fn extreme_tempo_and_meter_render_cleanly() {
+    for tempo in ["0.0001", "0.001", "1000000", "3.5"] {
+        let text = format!(
+            "# song: x  tempo: {tempo}  meter: 4/4  grid: 1/16\n# instruments: p:0\nb1 p | C16 |\n"
+        );
+        let q = parse::parse(&text).unwrap();
+        let midi = leadsheet_core::render::render(&q);
+        assert!(ingest::ingest_midi(&midi, "x").is_ok(), "tempo {tempo}");
+    }
+    let text =
+        "# song: x  tempo: 120  meter: 64/8  grid: 1/16\n# instruments: p:0\nb1 p | z128 |\n";
+    let q = parse::parse(text).unwrap();
+    assert!(ingest::ingest_midi(&leadsheet_core::render::render(&q), "x").is_ok());
+}

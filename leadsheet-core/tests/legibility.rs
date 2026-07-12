@@ -471,3 +471,72 @@ fn melodic_channel_wrap_never_hits_the_drum_channel() {
         }
     }
 }
+
+#[test]
+fn swing_preserves_fractional_durations() {
+    // A2 regression: the whole note shifts with the swing; a 32nd on the
+    // swung offbeat keeps its 120 ticks instead of collapsing to 1.
+    // 120 BPM, 960 PPQ: 1 tick = 60/(120*960) s; a 32nd = 0.0625 s.
+    let text = "\
+# song: sw  tempo: 120.00  meter: 4/4  swing: 66%  grid: 1/16
+# instruments: p:0
+b1 p | z2 c/2 z27/2 |
+";
+    let q = parse::parse(text).unwrap();
+    let midi = render::render(&q);
+    let back = ingest::ingest_midi(&midi, "sw").unwrap();
+    let n = &back.tracks[0].notes[0];
+    // Offbeat 8th at 480 ticks, displaced by 66*960/100 - 480 = 153.
+    assert!((n.onset - (480.0 + 153.0) / 960.0 * 0.5).abs() < 1e-6, "onset {}", n.onset);
+    assert!((n.dur - 0.0625).abs() < 1e-6, "32nd duration collapsed: {}", n.dur);
+
+    // 16th swing: offbeat 16th at 240 ticks, displaced by 58*480/100 - 240 = 38.
+    let text = "\
+# song: sw  tempo: 120.00  meter: 4/4  swing: 16th 58%  grid: 1/16
+# instruments: p:0
+b1 p | z1 c/2 z/2 z14 |
+";
+    let q = parse::parse(text).unwrap();
+    let back = ingest::ingest_midi(&render::render(&q), "sw").unwrap();
+    let n = &back.tracks[0].notes[0];
+    assert!((n.onset - (240.0 + 38.0) / 960.0 * 0.5).abs() < 1e-6, "onset {}", n.onset);
+    assert!((n.dur - 0.0625).abs() < 1e-6, "duration {}", n.dur);
+}
+
+#[test]
+fn tuplet_tie_across_the_barline_joins_at_exact_ticks() {
+    let text = "\
+# song: tt  tempo: 100.00  meter: 4/4  grid: 1/16
+# instruments: p:0
+b1 p | z12 (3 e f g)4- |
+b2 p | g4 z12 |
+";
+    let q = parse::parse(text).unwrap();
+    let t = |ticks: i64| leadsheet_core::grid::MusicalTime(ticks);
+    let g = q.tracks[0].notes.iter().find(|n| n.pitch == 79).unwrap();
+    // Last triplet member starts at 12*240 + 2*320 = 3520 and joins the
+    // next bar's g4: 320 + 960 ticks.
+    assert_eq!((g.onset, g.dur), (t(3520), t(1280)));
+    // Canonical both generations.
+    let text2 = emit::emit(&q);
+    assert_eq!(emit::emit(&parse::parse(&text2).unwrap()), text2);
+}
+
+#[test]
+fn fractional_durations_in_overlapping_voices() {
+    let text = "\
+# song: fv  tempo: 100.00  meter: 4/4  grid: 1/16
+# instruments: p:0
+b1 p | C16 & z4 e/2 f/2 e/2 f/2 z6 (3 g a b)4 |
+";
+    let q = parse::parse(text).unwrap();
+    let notes = &q.tracks[0].notes;
+    assert_eq!(notes.len(), 1 + 4 + 3);
+    let t = |ticks: i64| leadsheet_core::grid::MusicalTime(ticks);
+    let f2 = notes.iter().filter(|n| n.pitch == 77).nth(1).unwrap();
+    assert_eq!((f2.onset, f2.dur), (t(4 * 240 + 360), t(120)));
+    let a = notes.iter().find(|n| n.pitch == 81).unwrap();
+    assert_eq!((a.onset, a.dur), (t(12 * 240 + 320), t(320)));
+    let text2 = emit::emit(&q);
+    assert_eq!(emit::emit(&parse::parse(&text2).unwrap()), text2, "{text2}");
+}
