@@ -26,6 +26,17 @@ pub struct QTrack {
     pub notes: Vec<QNote>,
 }
 
+/// Swing feel, applied at render time. `percent` is where the swung
+/// subdivision lands inside its parent beat: 50 = straight, 66 = triplet
+/// shuffle. Authoring-only for now (never produced by quantization).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Swing {
+    /// Which layer swings: 8 = offbeat 8ths, 16 = offbeat 16ths.
+    pub level: u8,
+    /// 50..=75.
+    pub percent: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct QSong {
     pub name: String,
@@ -35,6 +46,8 @@ pub struct QSong {
     pub meter: (u32, u32),
     /// Estimated key (header + spelling); `None` = unknown, spell sharps.
     pub key: Option<crate::key::Key>,
+    /// Swing feel (authoring; see [`Swing`]).
+    pub swing: Option<Swing>,
     pub n_bars: u32,
     pub tracks: Vec<QTrack>,
 }
@@ -183,6 +196,7 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
         bpm,
         meter,
         key: None,
+        swing: None,
         n_bars: 0,
         tracks,
     };

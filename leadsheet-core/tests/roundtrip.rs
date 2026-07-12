@@ -17,6 +17,7 @@ fn tricky_qsong() -> QSong {
         bpm: 132.5,
         meter: (4, 4),
         key: None,
+        swing: None,
         n_bars: 5,
         tracks: vec![
             QTrack {

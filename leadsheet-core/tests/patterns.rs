@@ -65,6 +65,7 @@ fn structured_song() -> QSong {
         bpm: 120.0,
         meter: (4, 4),
         key: None,
+        swing: None,
         n_bars: 68,
         tracks: vec![
             QTrack { name: "bass".into(), program: 33, is_drums: false, notes: bass },

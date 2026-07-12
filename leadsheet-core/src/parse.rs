@@ -29,6 +29,7 @@ struct Header {
     bpm: f64,
     meter: (u32, u32),
     key: Option<Key>,
+    swing: Option<crate::grid::Swing>,
 }
 
 enum RecBody {
@@ -604,6 +605,7 @@ pub fn parse(text: &str) -> Result<QSong, Error> {
         bpm: header.bpm,
         meter: header.meter,
         key: header.key,
+        swing: header.swing,
         n_bars: max_end.div_ceil(cpb).max(next_bar).max(max_bar),
         tracks: b.tracks,
     })
@@ -623,8 +625,24 @@ fn parse_header_line(
         let mut fields_map = HashMap::new();
         let mut it = after.split_whitespace();
         let bpm: f64 = it.next().ok_or("missing tempo value")?.parse().map_err(|_| "bad tempo")?;
-        while let (Some(k), v) = (it.next(), it.next()) {
-            fields_map.insert(k.trim_end_matches(':'), v.ok_or(format!("missing value for {k}"))?);
+        let mut pending: Option<&str> = None;
+        while let Some(k) = pending.take().or_else(|| it.next()) {
+            if k.ends_with('%') {
+                // Second word of a two-word swing value.
+                fields_map.insert("swing2", k);
+                continue;
+            }
+            let v = it.next().ok_or(format!("missing value for {k}"))?;
+            if v.ends_with('%') && !k.trim_end_matches(':').eq("swing") {
+                return Err(format!("unexpected {v:?} after {k}"));
+            }
+            fields_map.insert(k.trim_end_matches(':'), v);
+            if v == "8th" || v == "16th" {
+                // The percent follows as a bare token.
+                if let Some(nxt) = it.next() {
+                    pending = Some(nxt);
+                }
+            }
         }
         let meter = match fields_map.get("meter") {
             None => (4, 4),
@@ -642,6 +660,27 @@ fn parse_header_line(
             None => None,
             Some(k) => Some(Key::parse(k).ok_or(format!("bad key {k:?}"))?),
         };
+        // `swing: 66%` (offbeat 8ths) or `swing: 16th 60%`. Because header
+        // fields split on whitespace, the two-word form arrives as
+        // swing->"16th" plus a stray percent token; recover it from the map.
+        let swing = match fields_map.get("swing") {
+            None => None,
+            Some(v) => {
+                let (level, pct_str) = match *v {
+                    "8th" | "16th" => {
+                        let lvl = if *v == "16th" { 16 } else { 8 };
+                        (lvl, *fields_map.get("swing2").ok_or("swing level without percent")?)
+                    }
+                    other => (8u8, other),
+                };
+                let percent: u8 = pct_str
+                    .strip_suffix('%')
+                    .and_then(|n| n.parse().ok())
+                    .filter(|p| (50..=75).contains(p))
+                    .ok_or(format!("bad swing {pct_str:?} (want 50%..75%)"))?;
+                Some(crate::grid::Swing { level, percent })
+            }
+        };
         if let Some(g) = fields_map.get("grid")
             && *g != "1/16"
         {
@@ -650,7 +689,7 @@ fn parse_header_line(
         if !bpm.is_finite() || bpm <= 0.0 {
             return Err(format!("bad tempo {bpm}"));
         }
-        *header = Some(Header { name, bpm, meter, key });
+        *header = Some(Header { name, bpm, meter, key, swing });
         return Ok(());
     }
     if let Some(fields) = rest.strip_prefix("instruments:") {

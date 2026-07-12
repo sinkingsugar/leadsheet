@@ -25,9 +25,14 @@ arrangement:
 
 ## Header
 
-- `# song: NAME  tempo: BPM  meter: N/D  key: K  grid: 1/16` — `key` is
-  optional (spelling hint only, never changes pitch semantics); only
-  `grid: 1/16` exists today. Meter denominator 4 or 8.
+- `# song: NAME  tempo: BPM  meter: N/D  key: K  swing: S  grid: 1/16` —
+  `key` is optional (spelling hint only, never changes pitch semantics);
+  only `grid: 1/16` exists today. Meter denominator 4 or 8.
+- `swing:` (optional): shuffle feel, applied at render time. `swing: 66%`
+  pushes every offbeat 8th to 66% through its beat (50 = straight,
+  66 = triplet shuffle); `swing: 16th 58%` swings the offbeat 16ths
+  instead. Range 50–75%. Notation stays on the straight grid — the feel
+  is a render property, like a drummer interpreting the chart.
 - `# instruments: name:PROGRAM ...` — GM program number, or `kit` for the
   drum channel. Declaration order is track order.
 - Any other `#` line is a comment.

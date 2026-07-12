@@ -54,6 +54,7 @@ fn band_song(key_name: Option<&str>) -> QSong {
         bpm: 100.0,
         meter: (4, 4),
         key: key_name.map(|k| key::Key::parse(k).unwrap()),
+        swing: None,
         n_bars: 4,
         tracks: vec![
             QTrack { name: "piano".into(), program: 0, is_drums: false, notes: piano },
@@ -134,6 +135,7 @@ fn key_detection_finds_am_and_eb() {
         bpm: 90.0,
         meter: (4, 4),
         key: None,
+        swing: None,
         n_bars: 1,
         tracks: vec![QTrack { name: "p".into(), program: 0, is_drums: false, notes }],
     };
@@ -203,6 +205,7 @@ fn drum_variants_emit_as_lane_diffs() {
         bpm: 100.0,
         meter: (4, 4),
         key: None,
+        swing: None,
         n_bars: 2,
         tracks: vec![QTrack { name: "drums".into(), program: 0, is_drums: true, notes: drums }],
     };
@@ -232,6 +235,7 @@ fn melodic_kinship_is_informational() {
         bpm: 100.0,
         meter: (4, 4),
         key: None,
+        swing: None,
         n_bars: 2,
         tracks: vec![QTrack { name: "p".into(), program: 0, is_drums: false, notes }],
     };
@@ -250,6 +254,7 @@ fn dynamics_emit_and_roundtrip() {
         bpm: 100.0,
         meter: (4, 4),
         key: None,
+        swing: None,
         n_bars: 2,
         tracks: vec![
             QTrack {
@@ -337,6 +342,43 @@ arrangement:
     let midi = render::render(&q);
     let back = ingest::ingest_midi(&midi, "x").unwrap();
     assert_eq!(back.note_count(), 18 + 2);
+}
+
+#[test]
+fn swing_header_shifts_offbeats() {
+    let text = "\
+# song: shuffle  tempo: 120.00  meter: 4/4  swing: 66%  grid: 1/16
+# instruments: p:0
+b1 p | C4 D4 E4 F4 & z2 c2 z2 d2 z2 e2 z2 f2 |
+";
+    let q = parse::parse(text).unwrap();
+    assert_eq!(q.swing, Some(leadsheet_core::grid::Swing { level: 8, percent: 66 }));
+    // Canonical emit keeps the header field.
+    let text2 = emit::emit(&q);
+    assert!(text2.contains("swing: 66%"), "{text2}");
+    assert_eq!(emit::emit(&parse::parse(&text2).unwrap()), text2);
+    // Render: at 120 BPM a beat is 0.5 s. Downbeat notes stay put; the
+    // offbeat-8th notes (cells 2,6,10,14) land at 66% through their beat.
+    let midi = render::render(&q);
+    let back = ingest::ingest_midi(&midi, "x").unwrap();
+    let t = &back.tracks[0];
+    let on_of = |pitch: u8| t.notes.iter().find(|n| n.pitch == pitch).unwrap().onset;
+    assert!((on_of(60) - 0.0).abs() < 1e-3, "C4 on the beat");
+    assert!((on_of(62) - 0.5).abs() < 1e-3, "D4 on beat 2");
+    assert!((on_of(72) - 0.33).abs() < 0.01, "c (offbeat 8th) swung: {}", on_of(72));
+    assert!((on_of(74) - 0.83).abs() < 0.01, "d swung into beat 2");
+
+    // 16th swing form parses too.
+    let q = parse::parse(
+        "# song: x  tempo: 120  meter: 4/4  swing: 16th 58%  grid: 1/16\n# instruments: p:0\nb1 p | C16 |\n",
+    )
+    .unwrap();
+    assert_eq!(q.swing, Some(leadsheet_core::grid::Swing { level: 16, percent: 58 }));
+    // Out-of-range rejected.
+    assert!(
+        parse::parse("# song: x  tempo: 120  swing: 90%\n# instruments: p:0\nb1 p | C16 |\n")
+            .is_err()
+    );
 }
 
 #[test]

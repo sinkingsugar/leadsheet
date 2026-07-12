@@ -349,6 +349,16 @@ pub fn emit(q: &QSong) -> String {
     if let Some(key) = q.key {
         let _ = write!(out, "  key: {}", key.name());
     }
+    if let Some(sw) = q.swing {
+        match sw.level {
+            16 => {
+                let _ = write!(out, "  swing: 16th {}%", sw.percent);
+            }
+            _ => {
+                let _ = write!(out, "  swing: {}%", sw.percent);
+            }
+        }
+    }
     out.push_str("  grid: 1/16\n");
     let _ = writeln!(
         out,
