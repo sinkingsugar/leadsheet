@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 525">
+  <defs>
+    <linearGradient id="copperL" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d99a6c"/>
+      <stop offset="1" stop-color="#a9613a"/>
+    </linearGradient>
+  </defs>
+  <!-- quantization grid -->
+  <g stroke="#5d6879" stroke-opacity=".65" stroke-width="5">
+    <line x1="40" y1="120" x2="352" y2="120"/>
+    <line x1="40" y1="162" x2="352" y2="162"/>
+    <line x1="40" y1="204" x2="352" y2="204"/>
+    <line x1="40" y1="246" x2="352" y2="246"/>
+    <line x1="40" y1="288" x2="352" y2="288"/>
+    <line x1="40" y1="330" x2="352" y2="330"/>
+    <line x1="40" y1="120" x2="40" y2="330"/>
+    <line x1="92" y1="120" x2="92" y2="330"/>
+    <line x1="144" y1="120" x2="144" y2="330"/>
+    <line x1="196" y1="120" x2="196" y2="330"/>
+    <line x1="248" y1="120" x2="248" y2="330"/>
+    <line x1="300" y1="120" x2="300" y2="330"/>
+    <line x1="352" y1="120" x2="352" y2="330"/>
+  </g>
+  <!-- roundtrip arrows (behind the barlines) -->
+  <g fill="none" stroke="#97a0ad" stroke-width="15" stroke-linecap="round">
+    <path d="M305 141 H396 Q424 141 424 110 Q424 79 396 79 H364"/>
+    <path d="M305 225 H445"/>
+    <path d="M305 309 H396 Q424 309 424 340 Q424 371 396 371 H364"/>
+  </g>
+  <g fill="#97a0ad" stroke="none">
+    <polygon points="366,62 366,96 336,79"/>
+    <polygon points="443,208 443,242 473,225"/>
+    <polygon points="366,354 366,388 336,371"/>
+  </g>
+  <!-- barlines + beam -->
+  <g fill="#24304f">
+    <rect x="107" y="20" width="22" height="395" rx="6"/>
+    <rect x="211" y="20" width="22" height="395" rx="6"/>
+    <rect x="319" y="20" width="22" height="395" rx="6"/>
+    <rect x="211" y="56" width="130" height="26" rx="6"/>
+  </g>
+  <!-- notes: thin stems + heads -->
+  <g fill="url(#copperL)">
+    <rect x="94" y="116" width="12" height="240" rx="6"/>
+    <rect x="198" y="140" width="12" height="172" rx="6"/>
+    <rect x="306" y="104" width="12" height="168" rx="6"/>
+    <ellipse cx="90" cy="347" rx="40" ry="28" transform="rotate(-22 90 347)"/>
+    <ellipse cx="198" cy="303" rx="40" ry="28" transform="rotate(-22 198 303)"/>
+    <ellipse cx="303" cy="263" rx="40" ry="28" transform="rotate(-22 303 263)"/>
+  </g>
+  <!-- wordmark: convert to outlines before final release -->
+  <text x="250" y="490" text-anchor="middle"
+        font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace"
+        font-size="72" letter-spacing="2" fill="#24304f">leadsheet</text>
+</svg>
