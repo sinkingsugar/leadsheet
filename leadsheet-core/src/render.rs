@@ -77,6 +77,27 @@ pub fn render(q: &QSong) -> Vec<u8> {
             let step = n.dur.ticks() as u32 / strokes;
             for k in 0..strokes {
                 let on = start + k * step;
+                // A drummer's strokes are not equal: a drag/ruff is soft
+                // grace strokes into the tap, a buzz is a press leaning
+                // forward. Equal-velocity retriggers of one sample are
+                // the classic machine-gun giveaway, so the subdivision
+                // shapes velocity (percent of the note's anchor vel).
+                // Render interpretation, like swing — the notation stays
+                // `2`/`3`/`4` and QNote.vel stays the anchor; strokes
+                // are authoring expression and deliberately don't
+                // survive transcription (D3), so nothing round-trips
+                // through these numbers.
+                const STROKE_SHAPE: [&[u16]; 3] = [
+                    &[72, 100],        // drag: grace into the tap
+                    &[58, 74, 100],    // ruff: two graces into the tap
+                    &[62, 68, 76, 86], // buzz: pulsing press, leaning in
+                ];
+                let vel = if strokes > 1 {
+                    let pct = STROKE_SHAPE[strokes as usize - 2][k as usize];
+                    ((n.vel as u16 * pct / 100) as u8).clamp(1, 127)
+                } else {
+                    n.vel.clamp(1, 127)
+                };
                 // Swing shifts the whole note (B4: player-like — the
                 // notated duration is preserved, even if that overlaps the
                 // next straight onset).
@@ -84,10 +105,7 @@ pub fn render(q: &QSong) -> Vec<u8> {
                 events.push((
                     on,
                     1,
-                    MidiMessage::NoteOn {
-                        key: u7::new(n.pitch),
-                        vel: u7::new(n.vel.clamp(1, 127)),
-                    },
+                    MidiMessage::NoteOn { key: u7::new(n.pitch), vel: u7::new(vel) },
                 ));
                 events.push((
                     off.max(on + 1),

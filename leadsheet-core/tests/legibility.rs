@@ -356,6 +356,29 @@ arrangement:
 }
 
 #[test]
+fn stroke_subdivision_shapes_velocity() {
+    // Equal-velocity retriggers of one sample are the machine-gun
+    // giveaway: the subdivision plays soft graces into the tap (drag,
+    // ruff) or a forward-leaning press (buzz). Render interpretation,
+    // like swing — QNote.vel stays the anchor, notation stays 2/3/4.
+    let text = "\
+# song: shape  tempo: 110.00  meter: 4/4  grid: 1/16
+# instruments: drums:kit
+
+b1 drums
+  S |2... 3... 4... x...|
+";
+    let q = parse::parse(text).unwrap();
+    let midi = render::render(&q);
+    let back = ingest::ingest_midi(&midi, "x").unwrap();
+    let mut hits: Vec<(f64, u8)> = back.tracks[0].notes.iter().map(|n| (n.onset, n.vel)).collect();
+    hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let vels: Vec<u8> = hits.into_iter().map(|(_, v)| v).collect();
+    // drag, ruff, buzz, then a plain hit at the anchor (default `f` 96).
+    assert_eq!(vels, [69, 96, 55, 71, 96, 59, 65, 72, 82, 96]);
+}
+
+#[test]
 fn swing_header_shifts_offbeats() {
     let text = "\
 # song: shuffle  tempo: 120.00  meter: 4/4  swing: 66%  grid: 1/16
