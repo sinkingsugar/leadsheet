@@ -377,6 +377,41 @@ fn validate_closes_the_triage_4_holes() {
     }
 }
 
+/// Triage-5 (the one r5 finding): render casts ticks to u32 and MIDI
+/// deltas to u28 — and midly's `u28::new` MASKS silently — so both
+/// validates bound total song ticks to `grid::MAX_SONG_TICKS`. A
+/// validated song can never wrap render's tick arithmetic.
+#[test]
+fn renderable_tick_domain_is_validated() {
+    let good = doc(AUTHOR);
+
+    // AUTHOR's first row has unit 2 (P7 is two bars): 40k reps ≈ 80k
+    // bars of 4/4 — inside the 100k bar cap, outside the tick domain.
+    let reps_of = |reps: u32| {
+        let mut d = good.clone();
+        let r = d
+            .timeline
+            .iter_mut()
+            .find_map(|i| match i {
+                TimelineItem::Row(r) => Some(r),
+                _ => None,
+            })
+            .unwrap();
+        r.reps = reps;
+        d
+    };
+    assert!(reps_of(40_000).validate().is_err(), "80k bars of 4/4 wrap u28 deltas");
+    reps_of(30_000).validate().expect("60k bars of 4/4 render fine");
+
+    // Same bound on the compiled layer — a host-built n_bars has no
+    // 100k cap at all, so this was u32-wrapped MIDI before.
+    let mut q = good.resolve().unwrap();
+    q.n_bars = 80_000;
+    assert!(q.validate().is_err(), "80k bars");
+    q.n_bars = 60_000;
+    q.validate().expect("60k bars");
+}
+
 /// B1 (triage-3): BPM is canonically hundredth-quantized in SOURCE —
 /// emission spells `{:.2}`, so finer precision was silently rewritten
 /// by the first `fmt`. QSong bpm stays a raw f64 (ingest measures

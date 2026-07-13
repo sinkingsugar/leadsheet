@@ -210,6 +210,17 @@ fn duplicate_drum_lane_is_an_error() {
 }
 
 #[test]
+fn tick_domain_caps_bars_per_meter() {
+    // MIDI deltas are u28, so the bar cap tightens with the meter: a
+    // 64/4 bar is 61,440 ticks and only 4,369 of them fit — far below
+    // the flat 100k cap. The diagnostic says so.
+    let head64 = "# song: t  tempo: 120.00  meter: 64/4  grid: 1/16\n# instruments: p:0\n";
+    let d = expect(&format!("{head64}b4370 p | z256 |\n"), "too-large", 3, "2^28");
+    assert!(d.message.contains("4369"), "{d}");
+    assert!(parse::parse(&format!("{head64}b4369 p | z256 |\n")).is_ok(), "the cap itself fits");
+}
+
+#[test]
 fn sub_hundredth_tempo_is_rejected_with_the_repair_value() {
     // B1 (triage-3): source BPM is hundredth-canonical — the emitter
     // spells {:.2}, so finer precision would be silently rewritten by

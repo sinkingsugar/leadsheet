@@ -21,6 +21,15 @@ pub const TICKS_PER_BEAT: i64 = 960;
 /// One 16th cell — the text format's duration unit.
 pub const TICKS_PER_SIXTEENTH: i64 = TICKS_PER_BEAT / CELLS_PER_BEAT as i64;
 
+/// The renderable tick domain. MIDI delta-times are u28 — and midly's
+/// `u28::new` MASKS silently past 2^28 — so every tick a song can place,
+/// including the swing shift (< one beat) and the minimum-length
+/// note-off bump, must stay inside it: hence one beat of headroom on
+/// each. Both validate boundaries and the parser enforce this, which is
+/// what makes render's tick casts (u32 events, u28 deltas) provably
+/// safe. In 4/4 this is ~69,904 bars — about 38 hours at 120 BPM.
+pub const MAX_SONG_TICKS: i64 = (1 << 28) - 1 - 2 * TICKS_PER_BEAT;
+
 /// A score position or duration in ticks (960 per beat). Integer math
 /// only; never leaves the crate as a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]

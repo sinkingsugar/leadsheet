@@ -481,7 +481,7 @@ fn first_tuplet_span(d: &mut Document) -> Option<&mut MusicalTime> {
 /// Apply hostile mutation `which`, walking forward past inapplicable
 /// ones (mutation 0 always applies). Returns the mutation's name.
 fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 24;
+    const N: u32 = 25;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -587,6 +587,16 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
                     .map(|i| i.program = 1 + spice % 127)
                     .is_some()
             }),
+            24 => ("timeline beyond the renderable tick domain", {
+                // A rest-bar row repeated past every cap (bars or ticks,
+                // whichever fires first — both must Err).
+                d.timeline.push(TimelineItem::Row(Row {
+                    label: None,
+                    stack: Vec::new(),
+                    reps: u32::MAX,
+                }));
+                true
+            }),
             _ => unreachable!(),
         };
         if applied {
@@ -615,7 +625,7 @@ fn qsong_note(q: &mut QSong, drums: Option<bool>) -> Option<&mut leadsheet_core:
 }
 
 fn mutate_hostile_qsong(q: &mut QSong, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 22;
+    const N: u32 = 23;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -697,6 +707,12 @@ fn mutate_hostile_qsong(q: &mut QSong, which: u8, spice: u8) -> &'static str {
                 } else {
                     false
                 }
+            }),
+            22 => ("beyond the renderable tick domain", {
+                // Host-built n_bars has no bar cap; render's u32/u28
+                // tick casts would silently wrap.
+                q.n_bars = u32::MAX;
+                true
             }),
             _ => unreachable!(),
         };

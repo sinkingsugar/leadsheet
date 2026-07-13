@@ -148,11 +148,15 @@ fn pathological_inputs_error_cleanly() {
 }
 
 /// The limits must not reject real material: a long-but-sane song parses.
+/// (69,904 bars is the 4/4 tick-domain cap — u28 MIDI deltas, ~38 hours
+/// at 120 BPM; the flat 100k cap only binds for meters below 4/4.)
 #[test]
 fn generous_but_bounded() {
     let head = "# song: x  tempo: 120  meter: 4/4\n# instruments: p:0\n";
-    let long = format!("{head}P1 p | C16 |\narrangement:\n  [P1] x99999\n");
-    assert_eq!(parse::parse(&long).unwrap().n_bars, 99999);
+    let long = format!("{head}P1 p | C16 |\narrangement:\n  [P1] x69904\n");
+    assert_eq!(parse::parse(&long).unwrap().n_bars, 69904);
+    let over = format!("{head}P1 p | C16 |\narrangement:\n  [P1] x69905\n");
+    assert!(parse::parse(&over).is_err(), "one bar past the tick domain");
     let odd_meter = "# song: x  tempo: 120  meter: 15/8\n# instruments: p:0\nb1 p | z30 |\n";
     assert_eq!(parse::parse(odd_meter).unwrap().meter, (15, 8));
 }

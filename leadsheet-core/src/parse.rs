@@ -349,6 +349,19 @@ struct DrumBlock {
     lanes: Vec<(u8, Vec<u8>)>,
 }
 
+const TICK_CAP_HINT: &str =
+    "songs cap at 2^28 ticks (MIDI's delta domain) — fewer bars fit a bigger meter";
+
+/// Meter-aware bar cap: MAX_BARS, tightened so the whole song fits the
+/// renderable tick domain ([`crate::grid::MAX_SONG_TICKS`] — u28 MIDI
+/// deltas; midly masks silently past them). Falls back to the flat cap
+/// while no header has been seen (the parse fails later anyway).
+fn bar_cap(header: Option<&Header>) -> u32 {
+    header
+        .map(|h| (crate::grid::MAX_SONG_TICKS / h.bar_ticks().ticks()).min(MAX_BARS as i64) as u32)
+        .unwrap_or(MAX_BARS)
+}
+
 /// `P<n>` / `b<n>` head token → block target, with bar-number limits.
 fn parse_head(head: &str) -> Result<BlockTarget, Raw> {
     if let Some(id) = head.strip_prefix('P').and_then(|n| n.parse().ok()) {
@@ -413,6 +426,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         patterns: &mut Vec<PatternDef>,
         pattern_index: &mut HashMap<usize, usize>,
         timeline: &mut Vec<TimelineItem>,
+        bar_cap: u32,
     ) -> Result<(), Raw> {
         if let Some(base_id) = block.variant_base {
             let base = pattern_index.get(&base_id).map(|i| &patterns[*i]).ok_or_else(|| {
@@ -452,6 +466,13 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                 });
             }
             BlockTarget::Direct(bar) => {
+                if bar > bar_cap {
+                    return Err(raw(
+                        "too-large",
+                        format!("bar {bar} is beyond the {bar_cap}-bar limit for this meter"),
+                    )
+                    .hint(TICK_CAP_HINT));
+                }
                 timeline.push(TimelineItem::Direct(DirectItem {
                     bar,
                     track: block.track,
@@ -502,8 +523,14 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
             }
             let block = pending.take().unwrap();
             let opened = block.line;
-            flush_block(block, &mut patterns, &mut pattern_index, &mut timeline)
-                .map_err(|r| diag(opened, "", r))?;
+            flush_block(
+                block,
+                &mut patterns,
+                &mut pattern_index,
+                &mut timeline,
+                bar_cap(header.as_ref()),
+            )
+            .map_err(|r| diag(opened, "", r))?;
         }
 
         if let Some(rest) = line.strip_prefix('#') {
@@ -550,8 +577,13 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     .at(format!("P{id}"))));
                 }
             }
-            if next_bar as u64 + reps as u64 * unit as u64 > MAX_BARS as u64 {
-                return Err(err(raw("too-large", format!("arrangement exceeds {MAX_BARS} bars"))));
+            let cap = bar_cap(header.as_ref());
+            if next_bar as u64 + reps as u64 * unit as u64 > cap as u64 {
+                return Err(err(raw(
+                    "too-large",
+                    format!("arrangement exceeds the {cap}-bar limit for this meter"),
+                )
+                .hint(TICK_CAP_HINT)));
             }
             next_bar += reps * unit;
             timeline.push(TimelineItem::Row(Row { label, stack: ids, reps }));
@@ -648,11 +680,13 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                 patterns.push(PatternDef { id, track: ti, base_vel, kin, body });
             }
             BlockTarget::Direct(bar) => {
-                if bar as u64 + body.n_bars() as u64 - 1 > MAX_BARS as u64 {
+                let cap = bar_cap(header.as_ref());
+                if bar as u64 + body.n_bars() as u64 - 1 > cap as u64 {
                     return Err(err(raw(
                         "too-large",
-                        format!("bars beyond the {MAX_BARS}-bar limit"),
+                        format!("bars beyond the {cap}-bar limit for this meter"),
                     )
+                    .hint(TICK_CAP_HINT)
                     .at(head)));
                 }
                 timeline.push(TimelineItem::Direct(DirectItem { bar, track: ti, base_vel, body }));
@@ -672,8 +706,14 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
     })?;
     if let Some(block) = pending.take() {
         let opened = block.line;
-        flush_block(block, &mut patterns, &mut pattern_index, &mut timeline)
-            .map_err(|r| diag(opened, "", r))?;
+        flush_block(
+            block,
+            &mut patterns,
+            &mut pattern_index,
+            &mut timeline,
+            bar_cap(Some(&header)),
+        )
+        .map_err(|r| diag(opened, "", r))?;
     }
     Ok(Document { header, instruments, patterns, timeline })
 }

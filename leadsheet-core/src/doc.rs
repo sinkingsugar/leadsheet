@@ -303,6 +303,16 @@ impl Document {
         if total_bars > 100_000 {
             return Err(doc_err(format!("{total_bars} bars is beyond the 100000-bar limit")));
         }
+        // The renderable tick domain: MIDI deltas are u28 and midly
+        // masks silently past them, so a validated song must fit
+        // MAX_SONG_TICKS or render would wrap positions. (total_bars is
+        // <= 100k here, so the product fits i64 with room to spare.)
+        if total_bars as i64 * bar.ticks() > crate::grid::MAX_SONG_TICKS {
+            return Err(doc_err(format!(
+                "{total_bars} bars of {}/{} exceed the renderable tick domain (2^28 MIDI deltas)",
+                self.header.meter.0, self.header.meter.1
+            )));
+        }
         Ok(())
     }
 
@@ -464,6 +474,14 @@ impl QSong {
         // Bounded given the validated header: bar_ticks <= 64 * 960
         // and n_bars is u32, so the product stays far below i64::MAX.
         let end = self.bar_ticks() * self.n_bars as i64;
+        // …but it must also fit the renderable tick domain (u28 MIDI
+        // deltas; midly masks silently past them) or render would wrap.
+        if end.ticks() > crate::grid::MAX_SONG_TICKS {
+            return Err(doc_err(format!(
+                "{} bars of {}/{} exceed the renderable tick domain (2^28 MIDI deltas)",
+                self.n_bars, self.meter.0, self.meter.1
+            )));
+        }
         for t in &self.tracks {
             if !valid_name(&t.name) {
                 return Err(doc_err(format!(

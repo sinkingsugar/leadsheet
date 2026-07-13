@@ -63,7 +63,11 @@ pub fn render(q: &QSong) -> Vec<u8> {
         };
         let channel = u4::new(channel);
 
-        // (tick, on_after_off ordering key, message)
+        // (tick, on_after_off ordering key, message). The u32 ticks and
+        // the u28 deltas below are safe because both validates and the
+        // parser bound songs to grid::MAX_SONG_TICKS (< 2^28, with
+        // headroom for the swing shift and the note-off bump) — midly's
+        // u28::new masks silently, so that bound is load-bearing.
         let mut events: Vec<(u32, u8, MidiMessage)> = Vec::with_capacity(track.notes.len() * 2);
         for n in &track.notes {
             let start = (n.onset.ticks() + swing_delta(q.swing, n.onset)).max(0) as u32;
