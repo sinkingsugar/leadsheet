@@ -9,6 +9,7 @@ wasm-pack build leadsheet-wasm --target web --release --out-dir ../web/pkg
 
 mkdir -p web/examples
 cp corpus/*.ls web/examples/
+cp songs/*.ls web/examples/
 
 echo
 echo "ready — serve with:  python3 -m http.server -d web 8000"
