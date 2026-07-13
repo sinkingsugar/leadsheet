@@ -47,6 +47,21 @@ let hasPlayed = false;
 
 await init();
 
+// Open on the pop example (single source of truth: the corpus copy in
+// examples/); the inline demo is the fallback for a build-less checkout.
+const initialDoc = await (async () => {
+  try {
+    const resp = await fetch("examples/pop.ls");
+    if (resp.ok) {
+      songName = "pop";
+      return await resp.text();
+    }
+  } catch {
+    // fall through to the inline demo
+  }
+  return DEFAULT_LS;
+})();
+
 // ---------- editor ----------
 
 function runCheck(text) {
@@ -112,7 +127,7 @@ const lsLinter = linter(
 
 const view = new EditorView({
   state: EditorState.create({
-    doc: DEFAULT_LS,
+    doc: initialDoc,
     extensions: [
       basicSetup,
       lsLanguage,
@@ -133,7 +148,7 @@ const view = new EditorView({
   }),
   parent: $("editor"),
 });
-runCheck(DEFAULT_LS);
+runCheck(initialDoc);
 
 function setEditorText(text) {
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
