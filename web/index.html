@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>leadsheet playground</title>
+<meta name="description" content="MIDI ↔ compact, semantically meaningful text. Drop a .mid, get a lead sheet you can read, edit, and hear.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="https://github.com/sinkingsugar/leadsheet" title="leadsheet on GitHub">
+    <svg viewBox="0 0 500 440" class="mark" aria-hidden="true">
+      <g stroke="#8a94a4" stroke-width="6" stroke-linecap="round" fill="none">
+        <line x1="76" y1="120" x2="380" y2="120"/><line x1="76" y1="162" x2="380" y2="162"/>
+        <line x1="76" y1="204" x2="380" y2="204"/><line x1="76" y1="246" x2="380" y2="246"/>
+        <line x1="76" y1="288" x2="380" y2="288"/><line x1="76" y1="330" x2="380" y2="330"/>
+        <line x1="163" y1="127" x2="163" y2="155"/><line x1="163" y1="211" x2="163" y2="239"/>
+        <line x1="163" y1="295" x2="163" y2="323"/><line x1="206" y1="169" x2="206" y2="197"/>
+        <line x1="206" y1="253" x2="206" y2="281"/><line x1="250" y1="127" x2="250" y2="155"/>
+        <line x1="250" y1="211" x2="250" y2="239"/><line x1="250" y1="295" x2="250" y2="323"/>
+        <line x1="293" y1="169" x2="293" y2="197"/><line x1="293" y1="253" x2="293" y2="281"/>
+        <line x1="380" y1="127" x2="380" y2="155"/><line x1="380" y1="211" x2="380" y2="239"/>
+        <line x1="380" y1="295" x2="380" y2="323"/>
+      </g>
+      <g stroke="#e6eaf2" stroke-width="7" stroke-linecap="round" fill="none">
+        <line x1="40" y1="117" x2="40" y2="333"/><line x1="62" y1="117" x2="62" y2="333"/>
+        <line x1="40" y1="120" x2="62" y2="120"/><line x1="40" y1="150" x2="62" y2="150"/>
+        <line x1="40" y1="180" x2="62" y2="180"/><line x1="40" y1="210" x2="62" y2="210"/>
+        <line x1="40" y1="240" x2="62" y2="240"/><line x1="40" y1="270" x2="62" y2="270"/>
+        <line x1="40" y1="300" x2="62" y2="300"/><line x1="40" y1="330" x2="62" y2="330"/>
+      </g>
+      <g fill="none" stroke="#98a2b2" stroke-width="16" stroke-linecap="round">
+        <path d="M305 141 H396 Q424 141 424 110 Q424 79 396 79 H364"/>
+        <path d="M305 225 H428"/>
+        <path d="M305 309 H396 Q424 309 424 340 Q424 371 396 371 H364"/>
+      </g>
+      <g fill="#98a2b2" stroke="none">
+        <polygon points="366,61 366,97 334,79"/><polygon points="426,207 426,243 458,225"/>
+        <polygon points="366,353 366,389 334,371"/>
+      </g>
+      <g fill="#e6eaf2">
+        <rect x="107" y="20" width="22" height="395" rx="6"/><rect x="211" y="20" width="22" height="395" rx="6"/>
+        <rect x="319" y="20" width="22" height="395" rx="6"/><rect x="199" y="56" width="149" height="26" rx="6"/>
+      </g>
+      <g fill="#d99a6c">
+        <rect x="92" y="116" width="14" height="240" rx="7"/><rect x="196" y="140" width="14" height="172" rx="7"/>
+        <rect x="304" y="104" width="14" height="168" rx="7"/>
+        <ellipse cx="88" cy="347" rx="38" ry="29" transform="rotate(-20 88 347)"/>
+        <ellipse cx="196" cy="303" rx="38" ry="29" transform="rotate(-20 196 303)"/>
+        <ellipse cx="301" cy="263" rx="38" ry="29" transform="rotate(-20 301 263)"/>
+      </g>
+    </svg>
+    <span class="name">leadsheet</span><span class="sub">playground</span>
+  </a>
+
+  <div class="tools">
+    <button id="open-btn" title="Open a .mid, .jsonl, .ls or .sf2 file">open</button>
+    <select id="example-sel" title="Load an example from the golden corpus">
+      <option value="" selected disabled>examples</option>
+      <option value="pop">pop</option>
+      <option value="waltz">waltz</option>
+      <option value="dynamics">dynamics</option>
+      <option value="matrix-excerpt">matrix-excerpt</option>
+    </select>
+    <button id="fmt-btn" title="Rewrite in canonical form">fmt</button>
+    <span class="sep"></span>
+    <button id="dl-ls-btn" title="Download the leadsheet text">.ls ↓</button>
+    <button id="dl-mid-btn" title="Render and download standard MIDI">.mid ↓</button>
+  </div>
+
+  <div class="transport">
+    <button id="play-btn" class="primary" title="Render and play (Cmd/Ctrl+Enter)">▶ play</button>
+    <button id="pause-btn" disabled title="Pause / resume">⏸</button>
+    <input id="seek" type="range" min="0" max="1000" value="0" disabled>
+    <span id="time" class="time">0:00 / 0:00</span>
+    <span id="sf-chip" class="chip" title="GeneralUser GS loads on first play (~32 MB, cached). Drop a .sf2 to use your own.">soundfont: on first play</span>
+  </div>
+</header>
+
+<main id="editor" aria-label="leadsheet text editor"></main>
+
+<footer>
+  <span id="check-status" class="ok"></span>
+  <span id="extra-status"></span>
+  <a class="doc" href="https://github.com/sinkingsugar/leadsheet/blob/main/FORMAT.md">format spec</a>
+</footer>
+
+<div id="dropzone" hidden>
+  <div class="dz-inner">
+    <p><strong>drop it</strong></p>
+    <p>.mid / .jsonl → compressed to text &nbsp;·&nbsp; .ls → opened &nbsp;·&nbsp; .sf2 → your soundfont</p>
+  </div>
+</div>
+
+<input type="file" id="file-input" hidden accept=".mid,.midi,.jsonl,.ls,.sf2,.sf3,.dls">
+<script type="module" src="app.js"></script>
+</body>
+</html>

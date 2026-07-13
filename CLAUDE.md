@@ -41,6 +41,8 @@ retroactive 3b spelling bake-off); per-track swing stays unblessed.
 | `corpus/` | Golden fixtures: compress output is byte-locked by `tests/corpus.rs`. |
 | `leadsheet-core/` | Library. `ingest` (.mid + MuScriptor jsonl) → `tempo`/`grid` (beat inference, quantization) → `chord`/`key`/`drums`/`notation` (semantics) → `pattern`/`emit` (text out) and `parse`/`render` (text in → MIDI). `metrics` is the oracle. |
 | `leadsheet-cli/` | `leadsheet compress | render | roundtrip | inspect | check | fmt | diff | eval` |
+| `leadsheet-wasm/` | Thin wasm-bindgen bindings over core (compress/render/check/fmt); JSON speaks the `check --json` dialect. |
+| `web/` | The playground: drop .mid ↔ edit .ls ↔ hear it. Static site, no bundler (CodeMirror + SpessaSynth vendored in `web/vendor/`); `web/build.sh` generates `pkg/` + `examples/`; deployed by `pages.yml`. Serve locally: `python3 -m http.server -d web 8000`. |
 
 ```
 leadsheet compress  in.mid  -o out.ls    # or MuScriptor .jsonl (streamable)
