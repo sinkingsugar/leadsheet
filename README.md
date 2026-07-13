@@ -129,10 +129,12 @@ tempo, key, meter, `--harmony`).
   section labels. ≥10× smaller than a naive event list on structured
   material.
 - **An expression layer for composing**: dynamics buckets (`@pp`…`@ff`),
-  accents/ghosts, drum stroke subdivision, swing, fraction durations
-  (`e/2` = a 32nd, `C3/2` = a dotted 16th) and true tuplet groups
-  (`(3 C D E)4`, septuplet-class divisions included) — all
-  round-trippable, all documented in [FORMAT.md](FORMAT.md).
+  accents/ghosts, drum stroke subdivision and lane tuplet groups
+  (`(3:4xxx)` = an 8th-note triplet on the snare), swing, fraction
+  durations (`e/2` = a 32nd, `C3/2` = a dotted 16th), true melodic
+  tuplet groups (`(3 C D E)4`, septuplet-class divisions included), and
+  per-bar meter overrides (`P5 drums 3/4` drops a 3/4 bar into a 4/4
+  song) — all round-trippable, all documented in [FORMAT.md](FORMAT.md).
 
 The whole text format is specified in **[FORMAT.md](FORMAT.md)** — short
 enough to paste into an LLM prompt next to a song, which is the intended

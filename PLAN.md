@@ -219,6 +219,9 @@ calls, no model deps in the crate.
       `/` fractions and `(n …)S` tuplets across models — zero-shot
       comprehension, spec-in-context writing validity, edit-task pass
       rate — and report; the data may overturn the delegated spellings.
+      Now also covers the 2026-07-13 pair (drum lane groups
+      `(n:span strokes)` and per-bar meter tokens `P5 drums 3/4`) —
+      same delegation, same retroactive measurement.
 - [x] **Expected-behavior fixture** (`eval/transcription-grid`):
       quantization snaps to 16ths; sub-16th authoring content
       deliberately does not survive MIDI → compress.
@@ -245,8 +248,10 @@ done — syntax decision stays deferred per the Rejected list).
 - CRDT collab layer: separate project, consumes `Document` + semantic
   diff. Stable object IDs live THERE (identity mapping over canonical
   text), not in `.ls`.
-- CC/automation lanes, tempo & meter maps: format decisions for later
-  Gio sessions; Phase 3's design note keeps the door open.
+- CC/automation lanes, tempo maps: format decisions for later
+  Gio sessions; Phase 3's design note keeps the door open. (Per-bar
+  METER overrides shipped 2026-07-13 — full meter *maps* with
+  mid-bar/beat-remapping semantics stay here.)
 - µtiming/velocity sidecar: format slot exists; estimation lives in the
   MuScriptor candle port.
 - Audio rendering, VST/WebAudio bridges: hosts.
@@ -286,6 +291,15 @@ conventions), without a multi-model bake-off. Phase 4's eval harness
 therefore **retroactively measures both spellings** as one of its first
 jobs, and the data may overturn them. One governance story: measured by
 default, this one delegated and to be back-measured.
+
+**Recorded exception (2026-07-13):** Gio blessed the *scope* of drum
+lane tuplet groups and per-bar meter overrides ("we need them now",
+after the rudiment-chart test exposed both gaps); the spellings —
+`(n:span strokes)` ratio groups (the trailing-span form `(3xxx)4` is
+provably ambiguous against digit cells in a whitespace-free lane;
+canonicality caught it) and the instrument-position meter token — were
+again delegated to the resident LLM user and join the retroactive
+bake-off above.
 
 **Recorded narrowings (review triage rounds 2–4; BLESSED by Gio
 2026-07-13):** four retroactive *format narrowings* shipped as

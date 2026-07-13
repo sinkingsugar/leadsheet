@@ -30,7 +30,9 @@ layers, `leadsheet diff`, and a Document-canonical `fmt` (author
 structure survives). Phase 4: the `eval/` harness with five starter
 tasks + the D3 fixture. Phase 5: wasm32 CI, `inspect --harmony`.
 PLAN.md's remaining open item is running the external eval (incl. the
-retroactive 3b spelling bake-off); per-track swing stays unblessed.
+retroactive 3b spelling bake-off, now also covering the 2026-07-13
+additions: drum lane tuplet groups `(3:4xxx)` and per-bar meter
+overrides `P5 drums 3/4`); per-track swing stays unblessed.
 
 ## Map
 
