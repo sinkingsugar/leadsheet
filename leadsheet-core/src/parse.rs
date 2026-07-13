@@ -25,8 +25,8 @@
 
 use crate::chord;
 use crate::doc::{
-    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, MelodicBar, PatternBody,
-    PatternDef, Row, TimelineItem,
+    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, LaneItem, MelodicBar,
+    PatternBody, PatternDef, Row, TimelineItem,
 };
 use crate::drums::{
     self, LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT,
@@ -254,31 +254,114 @@ fn lane_shape(line: &str) -> Option<(&str, &str)> {
     Some((label, content))
 }
 
-fn parse_lane_cells(content: &str, cpb: u32) -> Result<Vec<u8>, Raw> {
-    let mut cells = Vec::with_capacity(cpb as usize);
-    for c in content.chars() {
-        match c {
-            'x' => cells.push(LANE_HIT),
-            'X' => cells.push(LANE_ACCENT),
-            'o' => cells.push(LANE_GHOST),
-            '2' => cells.push(LANE_D2),
-            '3' => cells.push(LANE_D3),
-            '4' => cells.push(LANE_D4),
-            '.' | '-' => cells.push(LANE_EMPTY),
-            c if c.is_whitespace() => {}
+const LANE_GROUP_HINT: &str = "lane tuplet groups are `(n:span strokes)` — n strokes over span \
+                               cells, strokes `x`/`X`/`o`/`.`: `(3:4xxx)` is an 8th-note triplet \
+                               over a beat";
+
+fn parse_lane_items(content: &str, cpb: u32) -> Result<Vec<LaneItem>, Raw> {
+    let mut items = Vec::with_capacity(cpb as usize);
+    let mut width = 0u32;
+    let mut chars = content.chars().peekable();
+    while let Some(c) = chars.next() {
+        let item = match c {
+            'x' => LaneItem::Cell(LANE_HIT),
+            'X' => LaneItem::Cell(LANE_ACCENT),
+            'o' => LaneItem::Cell(LANE_GHOST),
+            '2' => LaneItem::Cell(LANE_D2),
+            '3' => LaneItem::Cell(LANE_D3),
+            '4' => LaneItem::Cell(LANE_D4),
+            '.' | '-' => LaneItem::Cell(LANE_EMPTY),
+            '(' => {
+                let mut arity = String::new();
+                while chars.peek().is_some_and(char::is_ascii_digit) {
+                    arity.push(chars.next().unwrap());
+                }
+                let n: u8 =
+                    arity.parse().ok().filter(|n| (2..=24).contains(n)).ok_or_else(|| {
+                        raw("bad-lane-char", format!("bad tuplet arity {arity:?} (want 2..=24)"))
+                            .hint(LANE_GROUP_HINT)
+                    })?;
+                if chars.next() != Some(':') {
+                    return Err(raw("bad-lane-char", format!("expected `:span` after ({n}"))
+                        .hint(LANE_GROUP_HINT));
+                }
+                let mut span_txt = String::new();
+                while chars.peek().is_some_and(char::is_ascii_digit) {
+                    span_txt.push(chars.next().unwrap());
+                }
+                let span: u8 = span_txt
+                    .parse()
+                    .ok()
+                    .filter(|s| (1..=cpb.min(255) as u8).contains(s))
+                    .ok_or_else(|| {
+                        raw("bad-lane-char", format!("bad group span {span_txt:?} (cells, 1..)"))
+                            .hint(LANE_GROUP_HINT)
+                    })?;
+                if MusicalTime::from_sixteenths(span as u32).ticks() < n as i64 {
+                    return Err(raw(
+                        "bad-lane-char",
+                        format!("a ({n}:{span} …) group has fewer ticks than strokes"),
+                    ));
+                }
+                let mut members = Vec::with_capacity(n as usize);
+                loop {
+                    match chars.next() {
+                        Some('x') => members.push(LANE_HIT),
+                        Some('X') => members.push(LANE_ACCENT),
+                        Some('o') => members.push(LANE_GHOST),
+                        Some('.') | Some('-') => members.push(LANE_EMPTY),
+                        Some(w) if w.is_whitespace() => {}
+                        Some(')') => break,
+                        Some(c) => {
+                            return Err(raw(
+                                "bad-lane-char",
+                                format!("bad group stroke {c:?} (strokes are . o x X)"),
+                            )
+                            .hint(LANE_GROUP_HINT));
+                        }
+                        None => {
+                            return Err(raw("bad-lane-char", "unclosed lane group — missing `)`")
+                                .hint(LANE_GROUP_HINT));
+                        }
+                    }
+                }
+                if members.len() != n as usize {
+                    return Err(raw(
+                        "bad-lane-char",
+                        format!(
+                            "lane group ({n}:{span} …) has {} strokes, needs exactly {n} (use \
+                             `.` for silent slots)",
+                            members.len()
+                        ),
+                    )
+                    .hint(LANE_GROUP_HINT));
+                }
+                if members.iter().all(|m| *m == LANE_EMPTY) {
+                    return Err(raw(
+                        "bad-lane-char",
+                        "a lane group needs at least one sounding stroke",
+                    )
+                    .hint("an all-silent group is plain dots — write the cells directly"));
+                }
+                LaneItem::Group { n, members, span }
+            }
+            c if c.is_whitespace() => continue,
             c => {
                 return Err(raw("bad-lane-char", format!("bad lane char {c:?}")).hint(
-                    "lane cells are `.` empty, `x` hit, `X` accent, `o` ghost, or `2`/`3`/`4` \
-                     sub-strokes; spaces are cosmetic",
+                    "lane cells are `.` empty, `x` hit, `X` accent, `o` ghost, `2`/`3`/`4` \
+                     sub-strokes, or a `(3xxx)4` tuplet group; spaces are cosmetic",
                 ));
             }
-        }
+        };
+        width = width.saturating_add(item.width());
+        items.push(item);
     }
-    if cells.len() != cpb as usize {
-        return Err(raw("bar-length", format!("lane has {} cells, expected {cpb}", cells.len()))
-            .hint("one cell per 16th between the `|`s; spaces don't count"));
+    if width != cpb {
+        return Err(raw("bar-length", format!("lane covers {width} cells, expected {cpb}")).hint(
+            "one cell per 16th between the `|`s (a group counts its span); spaces don't count",
+        ));
     }
-    Ok(cells)
+    Ok(items)
 }
 
 /// An arrangement row: `label: [P1+P2+z] x4` → (label, pattern ids, reps).
@@ -346,7 +429,7 @@ struct DrumBlock {
     base_vel: u8,
     /// Variant base: lanes not listed here are inherited from it.
     variant_base: Option<usize>,
-    lanes: Vec<(u8, Vec<u8>)>,
+    lanes: Vec<(u8, Vec<LaneItem>)>,
 }
 
 const TICK_CAP_HINT: &str =
@@ -504,8 +587,8 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     )
                     .hint("each lane appears once per block — merge the hits into one line")));
                 }
-                let cells = parse_lane_cells(content, cpb).map_err(err)?;
-                block.lanes.push((pitch, cells));
+                let items = parse_lane_items(content, cpb).map_err(err)?;
+                block.lanes.push((pitch, items));
                 continue;
             }
             // A lane-shaped line with an unknown label is almost certainly a

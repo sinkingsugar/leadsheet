@@ -71,12 +71,25 @@ pub fn render(q: &QSong) -> Vec<u8> {
         let mut events: Vec<(u32, u8, MidiMessage)> = Vec::with_capacity(track.notes.len() * 2);
         for n in &track.notes {
             let start = (n.onset.ticks() + swing_delta(q.swing, n.onset)).max(0) as u32;
-            // Drum stroke digits subdivide the note into that many hits
-            // (drag / triplet / buzz).
-            let strokes = if track.is_drums { n.strokes.clamp(1, 4) as u32 } else { 1 };
-            let step = n.dur.ticks() as u32 / strokes;
+            // Drum strokes subdivide the note: digits (`2`/`3`/`4`) into
+            // that many hits over one cell, lane tuplet groups into n
+            // members over their span, `stroke_mask` picking which
+            // members sound. Members place by the DESIGN-960 boundary
+            // rule — the same rounding melodic tuplets use.
+            let strokes = if track.is_drums { n.strokes.clamp(1, 31) as u32 } else { 1 };
+            // A one-cell full subdivision is a played rudiment (drag /
+            // ruff / buzz); anything wider is written rhythm.
+            let is_digit = track.is_drums
+                && (2..=4).contains(&strokes)
+                && n.dur == MusicalTime::from_sixteenths(1)
+                && n.stroke_mask == crate::grid::full_stroke_mask(n.strokes);
             for k in 0..strokes {
-                let on = start + k * step;
+                if track.is_drums && n.stroke_mask & (1u32 << k.min(31)) == 0 {
+                    continue;
+                }
+                let b0 = crate::notation::tuplet_boundary(n.dur, strokes, k).ticks() as u32;
+                let b1 = crate::notation::tuplet_boundary(n.dur, strokes, k + 1).ticks() as u32;
+                let on = start + b0;
                 // A drummer's strokes are not equal: a drag/ruff is soft
                 // grace strokes into the tap, a buzz is a press leaning
                 // forward. Equal-velocity retriggers of one sample are
@@ -92,7 +105,7 @@ pub fn render(q: &QSong) -> Vec<u8> {
                     &[58, 74, 100],    // ruff: two graces into the tap
                     &[62, 68, 76, 86], // buzz: pulsing press, leaning in
                 ];
-                let vel = if strokes > 1 {
+                let vel = if is_digit {
                     let pct = STROKE_SHAPE[strokes as usize - 2][k as usize];
                     ((n.vel as u16 * pct / 100) as u8).clamp(1, 127)
                 } else {
@@ -101,7 +114,8 @@ pub fn render(q: &QSong) -> Vec<u8> {
                 // Swing shifts the whole note (B4: player-like — the
                 // notated duration is preserved, even if that overlaps the
                 // next straight onset).
-                let off = if track.is_drums { on + step / 2 } else { start + n.dur.ticks() as u32 };
+                let off =
+                    if track.is_drums { on + (b1 - b0) / 2 } else { start + n.dur.ticks() as u32 };
                 events.push((
                     on,
                     1,

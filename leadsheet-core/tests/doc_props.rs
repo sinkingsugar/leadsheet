@@ -37,8 +37,8 @@
 //! without panicking.
 
 use leadsheet_core::doc::{
-    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, MelodicBar, PatternBody,
-    PatternDef, Row, TimelineItem,
+    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, LaneItem, MelodicBar,
+    PatternBody, PatternDef, Row, TimelineItem,
 };
 use leadsheet_core::drums::LANE_D4;
 use leadsheet_core::grid::{MusicalTime, QSong, Swing};
@@ -220,8 +220,31 @@ fn build_body(seed: &BodySeed, is_drums: bool, cpb: u32) -> PatternBody {
                 .lanes
                 .iter()
                 .map(|(p, cells)| {
-                    let full: Vec<u8> =
-                        (0..cpb as usize).map(|i| cells[i % cells.len()] % (LANE_D4 + 1)).collect();
+                    // Mostly plain cells with occasional tuplet groups —
+                    // the seed byte picks the item kind so canonicality
+                    // covers `(n:span strokes)` items too.
+                    let mut full: Vec<LaneItem> = Vec::new();
+                    let mut width = 0u32;
+                    let mut i = 0usize;
+                    while width < cpb {
+                        let b = cells[i % cells.len()];
+                        i += 1;
+                        if b % 11 == 7 && cpb - width >= 2 {
+                            let span = (2 + (b / 16) % 3).min((cpb - width) as u8 % 250);
+                            let n = 2 + b % 5;
+                            let mut members: Vec<u8> =
+                                (0..n).map(|k| cells[(i + k as usize) % cells.len()] % 4).collect();
+                            i += n as usize;
+                            if members.iter().all(|m| *m == 0) {
+                                members[0] = 2; // at least one sounding stroke
+                            }
+                            width += span as u32;
+                            full.push(LaneItem::Group { n, members, span });
+                        } else {
+                            width += 1;
+                            full.push(LaneItem::Cell(b % (LANE_D4 + 1)));
+                        }
+                    }
                     (*p, full)
                 })
                 .collect(),
@@ -447,9 +470,20 @@ fn first_row(d: &mut Document) -> Option<&mut Row> {
     })
 }
 
-fn first_lane(d: &mut Document) -> Option<&mut Vec<u8>> {
+fn first_lane(d: &mut Document) -> Option<&mut Vec<LaneItem>> {
     bodies_mut(d).find_map(|b| match b {
         PatternBody::Drums(db) => db.lanes.first_mut().map(|(_, cells)| cells),
+        _ => None,
+    })
+}
+
+fn first_lane_group(d: &mut Document) -> Option<&mut LaneItem> {
+    bodies_mut(d).find_map(|b| match b {
+        PatternBody::Drums(db) => db
+            .lanes
+            .iter_mut()
+            .flat_map(|(_, items)| items.iter_mut())
+            .find(|i| matches!(i, LaneItem::Group { .. })),
         _ => None,
     })
 }
@@ -481,7 +515,7 @@ fn first_tuplet_span(d: &mut Document) -> Option<&mut MusicalTime> {
 /// Apply hostile mutation `which`, walking forward past inapplicable
 /// ones (mutation 0 always applies). Returns the mutation's name.
 fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 25;
+    const N: u32 = 27;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -544,7 +578,9 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
                     .is_some()
             }),
             15 => ("bad lane cell code", {
-                first_lane(d).map(|cells| cells[0] = LANE_D4 + 1 + spice % 100).is_some()
+                first_lane(d)
+                    .map(|cells| cells[0] = LaneItem::Cell(LANE_D4 + 1 + spice % 100))
+                    .is_some()
             }),
             16 => ("lane length off by one", {
                 first_lane(d)
@@ -596,6 +632,24 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
                     reps: u32::MAX,
                 }));
                 true
+            }),
+            25 => ("all-silent lane group", {
+                first_lane_group(d)
+                    .map(|item| {
+                        if let LaneItem::Group { members, .. } = item {
+                            members.iter_mut().for_each(|m| *m = 0);
+                        }
+                    })
+                    .is_some()
+            }),
+            26 => ("lane group arity mismatch", {
+                first_lane_group(d)
+                    .map(|item| {
+                        if let LaneItem::Group { members, .. } = item {
+                            members.push(2);
+                        }
+                    })
+                    .is_some()
             }),
             _ => unreachable!(),
         };
@@ -694,8 +748,10 @@ fn mutate_hostile_qsong(q: &mut QSong, which: u8, spice: u8) -> &'static str {
                 qsong_note(q, Some(false)).map(|n| n.dur = MusicalTime(i64::MAX)).is_some()
             }),
             18 => ("melodic strokes", qsong_note(q, Some(false)).map(|n| n.strokes = 2).is_some()),
-            19 => ("stroke digit out of range", {
-                qsong_note(q, Some(true)).map(|n| n.strokes = 5).is_some()
+            19 => ("stroke count out of range", {
+                // 5 strokes in a cell became legal with lane groups
+                // ((5xxxxx)1); the domain ceiling is 24.
+                qsong_note(q, Some(true)).map(|n| n.strokes = 25).is_some()
             }),
             20 => ("drum hit off the 16th grid", {
                 qsong_note(q, Some(true)).map(|n| n.onset += MusicalTime(1)).is_some()

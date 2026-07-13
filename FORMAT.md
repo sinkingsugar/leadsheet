@@ -131,6 +131,16 @@ P3 drums@f
   snare roll is `S |2222 2222 2222 2222|`. Strokes play at the pattern's
   base dynamic. (Melodic sub-16th values are `/` fractions and tuplet
   groups — see Melodic above.)
+- Drum tuplet groups, in a lane: `(n:span strokes)` = n strokes evenly
+  dividing `span` whole cells (the ratio reads like 3:4, three against
+  four). Strokes are `x` hit, `X` accent, `o` ghost, `.` silent slot —
+  exactly n of them, at least one sounding; no nested digits. The group
+  counts `span` cells toward the bar: an 8th-note triplet over a beat is
+  `S |(3:4xxx) x... .... ....|`. Placement follows the same
+  `round(i·span/n)` boundary rule as melodic groups. A one-cell group at
+  uniform dynamic is the digit spelling (`(3:1xxx)` canonicalizes to
+  `3`); digits get played rudiment shading (drag/ruff/buzz), wider
+  groups render as written rhythm at their marked dynamics.
 - Compression is lossy by bucket: each bar's base is the bucketed median
   velocity; notes ≥12 above it emit `>`, ≥16 below emit `~`. A file with
   constant velocity emits no marks at all.

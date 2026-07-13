@@ -21,7 +21,7 @@
 //! representable in source while `QSong` sees only their rounded ticks.
 
 use crate::chord::{self, ChordSym};
-use crate::drums::{LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_GHOST, LANE_HIT};
+use crate::drums::{LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT};
 use crate::error::{Diagnostic, Error};
 use crate::grid::{MusicalTime, QNote, QSong, QTrack, Swing};
 use crate::key::Key;
@@ -70,6 +70,32 @@ pub enum ChordCol {
     Rest,
 }
 
+/// One step of a drum lane: a plain 16th cell, or a tuplet group
+/// spanning several cells. Cell/member codes are the shared lane
+/// vocabulary in [`crate::drums`]; group members are stroke codes only
+/// (`.` `o` `x` `X` — no nested subdivision digits).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaneItem {
+    Cell(u8),
+    /// `(n members)span`: n strokes evenly dividing `span` whole cells,
+    /// placed by the same boundary rule as melodic tuplets.
+    Group {
+        n: u8,
+        members: Vec<u8>,
+        span: u8,
+    },
+}
+
+impl LaneItem {
+    /// Width in 16th cells.
+    pub fn width(&self) -> u32 {
+        match self {
+            LaneItem::Cell(_) => 1,
+            LaneItem::Group { span, .. } => *span as u32,
+        }
+    }
+}
+
 /// Drum lanes as written: for a variant (`variant_base` set) these are
 /// the *diff* lanes only — unlisted lanes inherit from the base at
 /// resolve time (an all-dots lane clears an inherited one). Cell codes
@@ -77,7 +103,7 @@ pub enum ChordCol {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrumsBody {
     pub variant_base: Option<usize>,
-    pub lanes: Vec<(u8, Vec<u8>)>,
+    pub lanes: Vec<(u8, Vec<LaneItem>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -343,7 +369,7 @@ impl Document {
 
         // Drum-variant lane inheritance resolves once, in source order
         // (bases are defined before their variants).
-        let mut pattern_lanes: HashMap<usize, Vec<(u8, Vec<u8>)>> = HashMap::new();
+        let mut pattern_lanes: HashMap<usize, Vec<(u8, Vec<LaneItem>)>> = HashMap::new();
         for p in &self.patterns {
             if let PatternBody::Drums(d) = &p.body {
                 let lanes = merge_variant_lanes(d, &pattern_lanes)?;
@@ -439,8 +465,8 @@ impl Document {
 /// resolved lanes.
 fn merge_variant_lanes(
     d: &DrumsBody,
-    resolved: &HashMap<usize, Vec<(u8, Vec<u8>)>>,
-) -> Result<Vec<(u8, Vec<u8>)>, Error> {
+    resolved: &HashMap<usize, Vec<(u8, Vec<LaneItem>)>>,
+) -> Result<Vec<(u8, Vec<LaneItem>)>, Error> {
     let Some(base_id) = d.variant_base else {
         return Ok(d.lanes.clone());
     };
@@ -448,9 +474,9 @@ fn merge_variant_lanes(
         .get(&base_id)
         .ok_or_else(|| doc_err(format!("unknown drum variant base P{base_id}")))?;
     let mut merged = base.clone();
-    for (pitch, cells) in &d.lanes {
+    for (pitch, items) in &d.lanes {
         merged.retain(|(p, _)| p != pitch);
-        merged.push((*pitch, cells.clone()));
+        merged.push((*pitch, items.clone()));
     }
     Ok(merged)
 }
@@ -512,13 +538,52 @@ impl QSong {
                     if n.onset.try_as_sixteenths().is_none() {
                         return Err(doc_err(format!("{}: drum hit off the 16th grid", t.name)));
                     }
-                    if !(1..=4).contains(&n.strokes) {
-                        return Err(doc_err(format!("{}: stroke digit out of range", t.name)));
+                    if !(1..=24).contains(&n.strokes) {
+                        return Err(doc_err(format!("{}: stroke count out of range", t.name)));
                     }
-                } else if n.strokes != 1 {
-                    return Err(doc_err(format!("{}: melodic notes have strokes = 1", t.name)));
+                    if n.stroke_mask == 0 || n.stroke_mask >= 1u32 << n.strokes {
+                        return Err(doc_err(format!(
+                            "{}: stroke mask doesn't fit its {} members",
+                            t.name, n.strokes
+                        )));
+                    }
+                    // The lane spellings: a plain hit / digit fills one
+                    // cell; a tuplet group spans whole cells and its
+                    // ticks must cover its members. Digits (strokes
+                    // 2..=4, full mask) may only fill one cell — a
+                    // multi-cell full uniform subdivision is a group.
+                    match n.dur.try_as_sixteenths() {
+                        None => {
+                            return Err(doc_err(format!(
+                                "{}: drum span off the 16th grid",
+                                t.name
+                            )));
+                        }
+                        Some(0) => {
+                            return Err(doc_err(format!("{}: zero-width drum span", t.name)));
+                        }
+                        Some(1) => {}
+                        Some(_) if n.strokes >= 2 => {}
+                        Some(_) => {
+                            return Err(doc_err(format!(
+                                "{}: a plain drum hit fills one cell",
+                                t.name
+                            )));
+                        }
+                    }
+                    if n.dur.ticks() < n.strokes as i64 {
+                        return Err(doc_err(format!(
+                            "{}: drum span shorter than its {} strokes",
+                            t.name, n.strokes
+                        )));
+                    }
+                } else if n.strokes != 1 || n.stroke_mask != 1 {
+                    return Err(doc_err(format!(
+                        "{}: melodic notes have strokes = 1, mask = 1",
+                        t.name
+                    )));
                 }
-                let extent = if t.is_drums { MusicalTime::from_sixteenths(1) } else { n.dur };
+                let extent = n.dur;
                 // Total arithmetic (A2): a hostile onset near i64::MAX
                 // passes the sign checks and would overflow a bare add —
                 // the validator is the one thing that must never trust
@@ -704,7 +769,7 @@ fn validate_body(
                 }
             }
             let mut lane_pitches = std::collections::HashSet::new();
-            for (pitch, cells) in &d.lanes {
+            for (pitch, items) in &d.lanes {
                 if *pitch > 127 {
                     return Err(doc_err(format!("{who}: lane pitch {pitch} beyond MIDI 127")));
                 }
@@ -714,15 +779,53 @@ fn validate_body(
                         crate::drums::lane_label(*pitch)
                     )));
                 }
-                if cells.len() != cpb as usize {
+                let mut width = 0u32;
+                for item in items {
+                    validate_lane_item(item, &who)?;
+                    width = width.saturating_add(item.width());
+                }
+                if width != cpb {
                     return Err(doc_err(format!(
-                        "{who}: lane has {} cells, expected {cpb}",
-                        cells.len()
+                        "{who}: lane covers {width} cells, expected {cpb}"
                     )));
                 }
-                if cells.iter().any(|c| *c > LANE_D4) {
-                    return Err(doc_err(format!("{who}: bad lane cell code")));
-                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Lane-item shape rules, shared with the parser's construction: cell
+/// codes stay in the lane vocabulary; groups have matching arity and
+/// member count, stroke-only member codes, at least one sounding
+/// member, and a span whose ticks cover the members (the same
+/// `span >= n` rule melodic tuplets follow).
+fn validate_lane_item(item: &LaneItem, who: &str) -> Result<(), Error> {
+    match item {
+        LaneItem::Cell(code) => {
+            if *code > LANE_D4 {
+                return Err(doc_err(format!("{who}: bad lane cell code")));
+            }
+        }
+        LaneItem::Group { n, members, span } => {
+            if !(2..=24).contains(n) || members.len() != *n as usize {
+                return Err(doc_err(format!("{who}: malformed lane tuplet group")));
+            }
+            if members.iter().any(|m| *m > LANE_ACCENT) {
+                return Err(doc_err(format!(
+                    "{who}: lane group members are strokes only (. o x X)"
+                )));
+            }
+            if members.iter().all(|m| *m == LANE_EMPTY) {
+                return Err(doc_err(format!(
+                    "{who}: a lane group needs at least one sounding member (write dots instead)"
+                )));
+            }
+            let span_ticks = MusicalTime::from_sixteenths(*span as u32);
+            if *span == 0 || span_ticks.ticks() < *n as i64 {
+                return Err(doc_err(format!(
+                    "{who}: lane group span is shorter than its {n} members"
+                )));
             }
         }
     }
@@ -812,7 +915,7 @@ impl Builder {
     fn apply_body(
         &mut self,
         body: &PatternBody,
-        drum_lanes: Option<&[(u8, Vec<u8>)]>,
+        drum_lanes: Option<&[(u8, Vec<LaneItem>)]>,
         track: usize,
         bar_in_body: u32,
         abs_bar: u32,
@@ -867,30 +970,72 @@ impl Builder {
             }
             PatternBody::Drums(d) => {
                 let lanes = drum_lanes.unwrap_or(&d.lanes);
-                for (pitch, cells) in lanes {
-                    if cells.len() != cpb as usize {
-                        return Err(doc_err(format!(
-                            "lane has {} cells, expected {cpb}",
-                            cells.len()
-                        )));
+                for (pitch, items) in lanes {
+                    let width: u32 = items.iter().map(|i| i.width()).sum();
+                    if width != cpb {
+                        return Err(doc_err(format!("lane covers {width} cells, expected {cpb}")));
                     }
-                    for (i, code) in cells.iter().enumerate() {
-                        let (vel, strokes) = match *code {
-                            LANE_ACCENT => (notation::apply_mark(base, Mark::Accent), 1),
-                            LANE_GHOST => (notation::apply_mark(base, Mark::Ghost), 1),
-                            LANE_HIT => (base, 1),
-                            LANE_D2 => (base, 2),
-                            LANE_D3 => (base, 3),
-                            LANE_D4 => (base, 4),
-                            _ => continue,
-                        };
-                        self.tracks[track].notes.push(QNote {
-                            pitch: *pitch,
-                            onset: bar_start + MusicalTime::from_sixteenths(i as u32),
-                            dur: MusicalTime::from_sixteenths(1),
-                            strokes,
-                            vel,
-                        });
+                    let mut cell = 0u32;
+                    for item in items {
+                        let onset = bar_start + MusicalTime::from_sixteenths(cell);
+                        match item {
+                            LaneItem::Cell(code) => {
+                                let (vel, strokes) = match *code {
+                                    LANE_ACCENT => (notation::apply_mark(base, Mark::Accent), 1),
+                                    LANE_GHOST => (notation::apply_mark(base, Mark::Ghost), 1),
+                                    LANE_HIT => (base, 1),
+                                    LANE_D2 => (base, 2),
+                                    LANE_D3 => (base, 3),
+                                    LANE_D4 => (base, 4),
+                                    _ => {
+                                        cell += 1;
+                                        continue;
+                                    }
+                                };
+                                self.tracks[track].notes.push(QNote {
+                                    pitch: *pitch,
+                                    onset,
+                                    dur: MusicalTime::from_sixteenths(1),
+                                    strokes,
+                                    stroke_mask: crate::grid::full_stroke_mask(strokes),
+                                    vel,
+                                });
+                            }
+                            LaneItem::Group { n, members, span } => {
+                                // One QNote per velocity class, masks
+                                // partitioning the sounding members —
+                                // emission merges them back into one
+                                // group with per-member marks.
+                                let mut masks: [(u8, u32); 3] = [
+                                    (base, 0),
+                                    (notation::apply_mark(base, Mark::Accent), 0),
+                                    (notation::apply_mark(base, Mark::Ghost), 0),
+                                ];
+                                for (i, code) in members.iter().enumerate() {
+                                    let class = match *code {
+                                        LANE_HIT => 0,
+                                        LANE_ACCENT => 1,
+                                        LANE_GHOST => 2,
+                                        _ => continue,
+                                    };
+                                    masks[class].1 |= 1 << i;
+                                }
+                                for (vel, mask) in masks {
+                                    if mask == 0 {
+                                        continue;
+                                    }
+                                    self.tracks[track].notes.push(QNote {
+                                        pitch: *pitch,
+                                        onset,
+                                        dur: MusicalTime::from_sixteenths(*span as u32),
+                                        strokes: *n,
+                                        stroke_mask: mask,
+                                        vel,
+                                    });
+                                }
+                            }
+                        }
+                        cell += item.width();
                     }
                 }
             }
@@ -911,6 +1056,7 @@ impl Builder {
                     onset: start,
                     dur,
                     strokes: 1,
+                    stroke_mask: 1,
                     vel: base,
                 });
             }
@@ -1004,7 +1150,14 @@ impl Builder {
                     idx
                 }
                 None => {
-                    self.tracks[track].notes.push(QNote { pitch, onset, dur, strokes: 1, vel });
+                    self.tracks[track].notes.push(QNote {
+                        pitch,
+                        onset,
+                        dur,
+                        strokes: 1,
+                        stroke_mask: 1,
+                        vel,
+                    });
                     self.tracks[track].notes.len() - 1
                 }
             };

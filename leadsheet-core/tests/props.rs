@@ -258,6 +258,7 @@ fn assemble(cfg: GenCfg, t: &TrackGen, idx: usize, cpb: u32, n_bars: u32) -> QTr
                         onset: MusicalTime(onset),
                         dur: MusicalTime(240),
                         strokes: ev.dur_ticks as u8,
+                        stroke_mask: leadsheet_core::grid::full_stroke_mask(ev.dur_ticks as u8),
                         vel,
                     });
                 } else {
@@ -267,6 +268,7 @@ fn assemble(cfg: GenCfg, t: &TrackGen, idx: usize, cpb: u32, n_bars: u32) -> QTr
                         onset: MusicalTime(onset),
                         dur: MusicalTime(dur),
                         strokes: 1,
+                        stroke_mask: 1,
                         vel,
                     });
                 }

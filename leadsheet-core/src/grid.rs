@@ -116,15 +116,26 @@ impl Rem for MusicalTime {
 }
 
 /// A note on the grid: onset/duration in ticks, plus the drum stroke
-/// count (the lane digits `2`/`3`/`4` subdivide one cell into that many
-/// hits; always 1 for melodic notes and plain drum hits).
+/// shape. `strokes` is the member count of a uniform subdivision of
+/// `dur` (the lane digits `2`/`3`/`4` subdivide one cell; a lane tuplet
+/// group `(3x.x)4` subdivides its whole span); always 1 for melodic
+/// notes and plain drum hits. `stroke_mask` says which members sound
+/// (bit *i* = member *i*): all-ones for digits and plain hits, sparse
+/// for groups with silent slots. Members place at the DESIGN-960
+/// boundary rule `round(i·dur/strokes)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QNote {
     pub pitch: u8,
     pub onset: MusicalTime,
     pub dur: MusicalTime,
     pub strokes: u8,
+    pub stroke_mask: u32,
     pub vel: u8,
+}
+
+/// The all-members-sound mask for an n-stroke subdivision.
+pub fn full_stroke_mask(n: u8) -> u32 {
+    (1u32 << n.min(31)) - 1
 }
 
 impl QNote {
@@ -135,6 +146,7 @@ impl QNote {
             onset: MusicalTime::from_sixteenths(cell),
             dur: MusicalTime::from_sixteenths(dur_cells),
             strokes: 1,
+            stroke_mask: 1,
             vel,
         }
     }

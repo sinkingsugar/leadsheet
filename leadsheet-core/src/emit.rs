@@ -26,8 +26,8 @@
 
 use crate::chord;
 use crate::doc::{
-    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, MelodicBar, PatternBody,
-    PatternDef, Row, TimelineItem,
+    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, LaneItem, MelodicBar,
+    PatternBody, PatternDef, Row, TimelineItem,
 };
 use crate::drums::{
     self, LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT,
@@ -70,8 +70,10 @@ pub(crate) fn spell_chordal_bar(cols: &[ChordCol], flats: bool) -> String {
 struct Seg {
     onset: MusicalTime, // bar-relative
     dur: MusicalTime,
-    /// Drum stroke digit (1 = plain hit); always 1 for melodic segments.
+    /// Drum stroke shape (1 = plain hit); always 1/mask 1 for melodic
+    /// segments. See [`crate::grid::QNote`].
     strokes: u8,
+    stroke_mask: u32,
     pitch: u8,
     vel: u8,
     tie_in: bool,
@@ -118,6 +120,7 @@ fn split_bars(track: &QTrack, bar_len: MusicalTime, n_bars: u32) -> Vec<Vec<Seg>
                     onset: n.onset % bar_len,
                     dur: n.dur,
                     strokes: n.strokes,
+                    stroke_mask: n.stroke_mask,
                     pitch: n.pitch,
                     vel: n.vel,
                     tie_in: false,
@@ -138,6 +141,7 @@ fn split_bars(track: &QTrack, bar_len: MusicalTime, n_bars: u32) -> Vec<Vec<Seg>
                     onset: pos - bar_len * bar,
                     dur: seg_end - pos,
                     strokes: 1,
+                    stroke_mask: 1,
                     pitch: n.pitch,
                     vel: n.vel,
                     tie_in: pos > n.onset,
@@ -272,7 +276,7 @@ fn try_chordal(segs: &[Seg], bar_len: MusicalTime) -> Option<Vec<ChordCol>> {
     )
 }
 
-type Lanes = BTreeMap<u8, Vec<u8>>;
+type Lanes = BTreeMap<u8, Vec<LaneItem>>;
 
 pub(crate) fn lane_char(code: u8) -> char {
     match code {
@@ -286,41 +290,108 @@ pub(crate) fn lane_char(code: u8) -> char {
     }
 }
 
-/// Drum step-grid: one lane per GM voice, cells marked by dynamic.
+/// One lane item's canonical spelling (no beat spacing).
+pub(crate) fn lane_item_text(item: &LaneItem) -> String {
+    match item {
+        LaneItem::Cell(code) => lane_char(*code).to_string(),
+        LaneItem::Group { n, members, span } => {
+            let strokes: String = members.iter().map(|m| lane_char(*m)).collect();
+            format!("({n}:{span}{strokes})")
+        }
+    }
+}
+
+/// A whole lane's canonical spelling, unspaced — dedup keys and diff.
+pub(crate) fn lane_text(items: &[LaneItem]) -> String {
+    items.iter().map(lane_item_text).collect()
+}
+
+/// The lane code a velocity earns relative to the bar's base bucket.
+fn stroke_code(vel: u8, base: u8) -> u8 {
+    match notation::mark_for_vel(vel, base) {
+        notation::Mark::Accent => LANE_ACCENT,
+        notation::Mark::Ghost => LANE_GHOST,
+        notation::Mark::None => LANE_HIT,
+    }
+}
+
+/// Drum step-grid: one lane per GM voice. Same-placement segments (one
+/// group's velocity classes) merge back into one item; digits stay
+/// digits, single-cell full-mask groups canonicalize to digits, and
+/// everything else spells as a `(n strokes)span` group.
 fn drum_lane_map(segs: &[Seg], cells_per_bar: u32, base: u8) -> Lanes {
-    let mut lanes: Lanes = BTreeMap::new();
+    // Placement key: (start cell, span cells, member count). Drum onsets
+    // and spans are on the 16th grid by construction (parse lanes and
+    // quantize both emit cell-aligned values); QSong::validate() rejects
+    // off-grid host-built hits before they can panic here.
+    let mut placed: BTreeMap<(u8, u32, u32, u8), Vec<u8>> = BTreeMap::new();
     for s in segs {
-        let code = match s.strokes {
-            2 => LANE_D2,
-            3 => LANE_D3,
-            n if n >= 4 => LANE_D4,
-            _ => match notation::mark_for_vel(s.vel, base) {
-                notation::Mark::Accent => LANE_ACCENT,
-                notation::Mark::Ghost => LANE_GHOST,
-                notation::Mark::None => LANE_HIT,
-            },
+        let start = s.onset.as_sixteenths_exact();
+        let span = s.dur.as_sixteenths_exact();
+        let members = placed
+            .entry((s.pitch, start, span, s.strokes))
+            .or_insert_with(|| vec![LANE_EMPTY; s.strokes as usize]);
+        let code = stroke_code(s.vel, base);
+        for i in 0..s.strokes {
+            if s.stroke_mask & (1 << i) != 0 {
+                members[i as usize] = code;
+            }
+        }
+    }
+    let mut lanes: Lanes = BTreeMap::new();
+    let mut cursor: BTreeMap<u8, u32> = BTreeMap::new();
+    for ((pitch, start, span, n), members) in placed {
+        let lane = lanes.entry(pitch).or_default();
+        let pos = cursor.entry(pitch).or_insert(0);
+        if start < *pos || start + span > cells_per_bar {
+            // Overlapping or bar-crossing placements are unrepresentable
+            // in one lane; validated resolver output never produces them.
+            continue;
+        }
+        while *pos < start {
+            lane.push(LaneItem::Cell(LANE_EMPTY));
+            *pos += 1;
+        }
+        let uniform_base = members.iter().all(|m| *m == LANE_HIT);
+        let item = if n == 1 {
+            LaneItem::Cell(members[0])
+        } else if span == 1 && uniform_base && (2..=4).contains(&n) {
+            // The digit spellings own their shapes: `2`/`3`/`4`.
+            LaneItem::Cell(match n {
+                2 => LANE_D2,
+                3 => LANE_D3,
+                _ => LANE_D4,
+            })
+        } else {
+            LaneItem::Group { n, members, span: span as u8 }
         };
-        // Drum hits are on the 16th grid by construction (parse lanes and
-        // quantize both emit cell-aligned onsets); QSong::validate()
-        // rejects off-grid host-built hits before they can panic here.
-        lanes.entry(s.pitch).or_insert_with(|| vec![LANE_EMPTY; cells_per_bar as usize])
-            [s.onset.as_sixteenths_exact() as usize] = code;
+        lane.push(item);
+        *pos += span;
+    }
+    for (pitch, lane) in &mut lanes {
+        let pos = cursor.get(pitch).copied().unwrap_or(0);
+        for _ in pos..cells_per_bar {
+            lane.push(LaneItem::Cell(LANE_EMPTY));
+        }
     }
     lanes
 }
 
-/// Render lanes as tab lines, cells grouped by beat.
-fn render_lanes(entries: &[(u8, Vec<u8>)]) -> String {
+/// Render lanes as tab lines, cells grouped by beat where item edges
+/// allow it.
+fn render_lanes(entries: &[(u8, Vec<LaneItem>)]) -> String {
     let label_w = entries.iter().map(|(p, _)| drums::lane_label(*p).len()).max().unwrap_or(1);
     entries
         .iter()
-        .map(|(pitch, cells)| {
+        .map(|(pitch, items)| {
             let mut grid = String::new();
-            for (i, code) in cells.iter().enumerate() {
-                if i > 0 && i % 4 == 0 {
+            let mut pos = 0u32;
+            for item in items {
+                if pos > 0 && pos.is_multiple_of(4) {
                     grid.push(' ');
                 }
-                grid.push(lane_char(*code));
+                grid.push_str(&lane_item_text(item));
+                pos += item.width();
             }
             format!("  {:<label_w$} |{grid}|", drums::lane_label(*pitch))
         })
@@ -328,8 +399,9 @@ fn render_lanes(entries: &[(u8, Vec<u8>)]) -> String {
         .join("\n")
 }
 
-fn lanes_sorted(lanes: &Lanes) -> Vec<(u8, Vec<u8>)> {
-    let mut entries: Vec<(u8, Vec<u8>)> = lanes.iter().map(|(p, c)| (*p, c.clone())).collect();
+fn lanes_sorted(lanes: &Lanes) -> Vec<(u8, Vec<LaneItem>)> {
+    let mut entries: Vec<(u8, Vec<LaneItem>)> =
+        lanes.iter().map(|(p, c)| (*p, c.clone())).collect();
     entries.sort_by_key(|(p, _)| drums::lane_order(*p));
     entries
 }
@@ -351,10 +423,10 @@ impl Body {
             Body::Chordal { base, text, .. } => format!("c{base}:{text}"),
             Body::Drums { base, lanes } => {
                 let mut s = format!("d{base}:");
-                for (pitch, cells) in lanes {
+                for (pitch, items) in lanes {
                     s.push_str(&pitch.to_string());
                     s.push('=');
-                    s.extend(cells.iter().map(|c| lane_char(*c)));
+                    s.push_str(&lane_text(items));
                     s.push(';');
                 }
                 s
@@ -413,7 +485,7 @@ enum PatternForm {
     /// (a lane cleared relative to the base appears as all dots).
     DrumsDiff {
         base: usize,
-        lanes: Vec<(u8, Vec<u8>)>,
+        lanes: Vec<(u8, Vec<LaneItem>)>,
     },
 }
 
@@ -519,7 +591,7 @@ pub fn from_qsong(q: &QSong) -> Document {
                             unreachable!()
                         };
                         let cpb = q.cells_per_bar() as usize;
-                        let mut diff: Vec<(u8, Vec<u8>)> = Vec::new();
+                        let mut diff: Vec<(u8, Vec<LaneItem>)> = Vec::new();
                         let pitches: std::collections::BTreeSet<u8> =
                             lanes_i.keys().chain(base_lanes.keys()).copied().collect();
                         for pitch in pitches {
@@ -527,7 +599,7 @@ pub fn from_qsong(q: &QSong) -> Document {
                                 let cells = lanes_i
                                     .get(&pitch)
                                     .cloned()
-                                    .unwrap_or_else(|| vec![LANE_EMPTY; cpb]); // cleared lane
+                                    .unwrap_or_else(|| vec![LaneItem::Cell(LANE_EMPTY); cpb]); // cleared lane
                                 diff.push((pitch, cells));
                             }
                         }

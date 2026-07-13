@@ -192,7 +192,7 @@ fn matches_exactly(q: &QSong, target: &QSong, vel_sensitive: bool) -> (bool, Opt
                     .map(key)
                     .map(|mut k| {
                         if !vel_sensitive {
-                            k.4 = 0;
+                            k.5 = 0;
                         }
                         k
                     })
@@ -224,10 +224,10 @@ fn matches_exactly(q: &QSong, target: &QSong, vel_sensitive: bool) -> (bool, Opt
 /// note-comparing constraint is velocity-sensitive — an edit that
 /// preserves pitches but destroys dynamics is not "unchanged". Only
 /// `matches` offers a per-task opt-out.
-type NoteKey = (u8, i64, i64, u8, u8);
+type NoteKey = (u8, i64, i64, u8, u32, u8);
 
 fn key(n: &leadsheet_core::grid::QNote) -> NoteKey {
-    (n.pitch, n.onset.ticks(), n.dur.ticks(), n.strokes, n.vel)
+    (n.pitch, n.onset.ticks(), n.dur.ticks(), n.strokes, n.stroke_mask, n.vel)
 }
 
 fn notes_of(q: &QSong, track: &str) -> Vec<NoteKey> {
@@ -265,8 +265,10 @@ fn pitch_shift(inp: &QSong, out: &QSong, track: &str, semis: i32) -> (bool, Opti
     if a.len() != b.len() {
         return (false, Some(format!("{} notes, wanted {}", b.len(), a.len())));
     }
-    let shifted: Vec<NoteKey> =
-        a.iter().map(|(p, o, d, s, v)| ((*p as i32 + semis) as u8, *o, *d, *s, *v)).collect();
+    let shifted: Vec<NoteKey> = a
+        .iter()
+        .map(|(p, o, d, s, m, v)| ((*p as i32 + semis) as u8, *o, *d, *s, *m, *v))
+        .collect();
     (shifted == b, Some("rhythm or interval mismatch".into()))
 }
 

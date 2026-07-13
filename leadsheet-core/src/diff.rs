@@ -16,7 +16,7 @@
 //! indices rebinds every reference and must not diff empty.
 
 use crate::doc::{Document, DrumsBody, Instrument, PatternBody, PatternDef, Row, TimelineItem};
-use crate::emit::{lane_char, spell_chordal_bar, spell_melodic_bar};
+use crate::emit::{lane_text, spell_chordal_bar, spell_melodic_bar};
 use crate::{drums, notation};
 use std::fmt::Write;
 
@@ -281,7 +281,6 @@ fn diff_drums(out: &mut String, id: usize, da: &DrumsBody, db: &DrumsBody) {
         let show = |v: Option<usize>| v.map(|b| format!("~P{b}")).unwrap_or_else(|| "-".into());
         let _ = writeln!(out, "P{id}: base {} -> {}", show(da.variant_base), show(db.variant_base));
     }
-    let lane_str = |cells: &[u8]| cells.iter().map(|c| lane_char(*c)).collect::<String>();
     for (pitch, cells) in &da.lanes {
         match db.lanes.iter().find(|(p, _)| p == pitch) {
             None => {
@@ -292,8 +291,8 @@ fn diff_drums(out: &mut String, id: usize, da: &DrumsBody, db: &DrumsBody) {
                     out,
                     "P{id} lane {}: |{}| -> |{}|",
                     drums::lane_label(*pitch),
-                    lane_str(cells),
-                    lane_str(other)
+                    lane_text(cells),
+                    lane_text(other)
                 );
             }
             _ => {}
@@ -305,7 +304,7 @@ fn diff_drums(out: &mut String, id: usize, da: &DrumsBody, db: &DrumsBody) {
                 out,
                 "P{id} lane {} added: |{}|",
                 drums::lane_label(*pitch),
-                lane_str(cells)
+                lane_text(cells)
             );
         }
     }

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 5e168e5f1411f53f43ee84ed20c6140606111fd7a6bb4f820dc28ca18763f5df # shrinks to (d, which, spice) = (Document { header: Header { name: "a", bpm: 47.78, meter: (7, 8), key: None, swing: Some(Swing { level: 16, percent: 52 }) }, instruments: [Instrument { name: "L1", program: 0, is_drums: true }, Instrument { name: "YZt", program: 23, is_drums: false }, Instrument { name: "zO", program: 125, is_drums: false }], patterns: [PatternDef { id: 1, track: 0, base_vel: 32, kin: None, body: Drums(DrumsBody { variant_base: None, lanes: [(39, [Cell(6), Cell(5), Cell(4), Cell(6), Cell(5), Cell(4), Cell(6), Cell(5), Cell(4), Cell(6), Cell(5), Cell(4), Cell(6), Cell(5)])] }) }, PatternDef { id: 2, track: 0, base_vel: 48, kin: None, body: Drums(DrumsBody { variant_base: Some(1), lanes: [(32, [Cell(2), Cell(2), Cell(6), Cell(6), Cell(2), Cell(2), Cell(6), Cell(6), Cell(2), Cell(2), Cell(6), Cell(6), Cell(2), Cell(2)]), (58, [Cell(2), Cell(5), Cell(6), Cell(3), Cell(4), Cell(6), Cell(3), Cell(6), Cell(2), Cell(5), Cell(6), Cell(3), Cell(4), Cell(6)])] }) }], timeline: [Row(Row { label: Some("aauz"), stack: [2], reps: 3 })] }, 226, 123)
