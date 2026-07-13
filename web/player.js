@@ -42,9 +42,17 @@ export class Player {
   seq = null;
   soundFontName = null;
 
+  // Must be called synchronously inside a user-gesture handler, before any
+  // await: Safari only honors AudioContext creation/resume while the gesture
+  // is live, and the first play's soundfont download outlives it.
+  unlock() {
+    if (!this.ctx) this.ctx = new AudioContext();
+    if (this.ctx.state === "suspended") this.ctx.resume();
+  }
+
   async init() {
-    if (this.ctx) return;
-    this.ctx = new AudioContext();
+    this.unlock();
+    if (this.synth) return;
     await this.ctx.audioWorklet.addModule("./vendor/spessasynth_processor.min.js");
     this.synth = new WorkletSynthesizer(this.ctx);
     this.synth.connect(this.ctx.destination);

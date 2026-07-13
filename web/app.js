@@ -301,6 +301,7 @@ async function ensureSoundFont() {
 }
 
 async function playCurrent() {
+  player.unlock(); // synchronously, while the user gesture is still live (Safari)
   const text = editorText();
   let bytes;
   try {
