@@ -6,19 +6,19 @@
     </linearGradient>
   </defs>
   <!-- barlines + beam -->
-  <g fill="#24304f">
+  <g fill="#1f2a44">
     <rect x="78" y="16" width="16" height="208" rx="5"/>
     <rect x="134" y="16" width="16" height="208" rx="5"/>
     <rect x="190" y="16" width="16" height="208" rx="5"/>
-    <rect x="134" y="34" width="72" height="16" rx="5"/>
+    <rect x="128" y="34" width="78" height="16" rx="5"/>
   </g>
   <!-- notes: thin stems + heads -->
   <g fill="url(#copperI)">
-    <rect x="69" y="64" width="8" height="108" rx="4"/>
-    <rect x="125" y="78" width="8" height="74" rx="4"/>
-    <rect x="181" y="56" width="8" height="74" rx="4"/>
-    <ellipse cx="56" cy="172" rx="26" ry="18" transform="rotate(-22 56 172)"/>
-    <ellipse cx="112" cy="152" rx="26" ry="18" transform="rotate(-22 112 152)"/>
-    <ellipse cx="168" cy="130" rx="26" ry="18" transform="rotate(-22 168 130)"/>
+    <rect x="68" y="64" width="10" height="108" rx="5"/>
+    <rect x="124" y="78" width="10" height="74" rx="5"/>
+    <rect x="180" y="56" width="10" height="74" rx="5"/>
+    <ellipse cx="56" cy="172" rx="26" ry="20" transform="rotate(-20 56 172)"/>
+    <ellipse cx="112" cy="152" rx="26" ry="20" transform="rotate(-20 112 152)"/>
+    <ellipse cx="168" cy="130" rx="26" ry="20" transform="rotate(-20 168 130)"/>
   </g>
 </svg>

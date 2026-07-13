@@ -5,47 +5,66 @@
       <stop offset="1" stop-color="#b56f42"/>
     </linearGradient>
   </defs>
-  <!-- quantization grid -->
-  <g stroke="#9aa4b5" stroke-opacity=".5" stroke-width="5">
-    <line x1="40" y1="120" x2="352" y2="120"/>
-    <line x1="40" y1="162" x2="352" y2="162"/>
-    <line x1="40" y1="204" x2="352" y2="204"/>
-    <line x1="40" y1="246" x2="352" y2="246"/>
-    <line x1="40" y1="288" x2="352" y2="288"/>
-    <line x1="40" y1="330" x2="352" y2="330"/>
-    <line x1="40" y1="120" x2="40" y2="330"/>
-    <line x1="92" y1="120" x2="92" y2="330"/>
-    <line x1="144" y1="120" x2="144" y2="330"/>
-    <line x1="196" y1="120" x2="196" y2="330"/>
-    <line x1="248" y1="120" x2="248" y2="330"/>
-    <line x1="300" y1="120" x2="300" y2="330"/>
-    <line x1="352" y1="120" x2="352" y2="330"/>
+  <!-- quantization grid: rows continuous, cell borders checkered -->
+  <g stroke="#8a94a4" stroke-width="6" stroke-linecap="round" fill="none">
+    <line x1="76" y1="120" x2="380" y2="120"/>
+    <line x1="76" y1="162" x2="380" y2="162"/>
+    <line x1="76" y1="204" x2="380" y2="204"/>
+    <line x1="76" y1="246" x2="380" y2="246"/>
+    <line x1="76" y1="288" x2="380" y2="288"/>
+    <line x1="76" y1="330" x2="380" y2="330"/>
+    <line x1="163" y1="127" x2="163" y2="155"/>
+    <line x1="163" y1="211" x2="163" y2="239"/>
+    <line x1="163" y1="295" x2="163" y2="323"/>
+    <line x1="206" y1="169" x2="206" y2="197"/>
+    <line x1="206" y1="253" x2="206" y2="281"/>
+    <line x1="250" y1="127" x2="250" y2="155"/>
+    <line x1="250" y1="211" x2="250" y2="239"/>
+    <line x1="250" y1="295" x2="250" y2="323"/>
+    <line x1="293" y1="169" x2="293" y2="197"/>
+    <line x1="293" y1="253" x2="293" y2="281"/>
+    <line x1="380" y1="127" x2="380" y2="155"/>
+    <line x1="380" y1="211" x2="380" y2="239"/>
+    <line x1="380" y1="295" x2="380" y2="323"/>
+  </g>
+  <!-- left ladder frame -->
+  <g stroke="#e6eaf2" stroke-width="7" stroke-linecap="round" fill="none">
+    <line x1="40" y1="117" x2="40" y2="333"/>
+    <line x1="62" y1="117" x2="62" y2="333"/>
+    <line x1="40" y1="120" x2="62" y2="120"/>
+    <line x1="40" y1="150" x2="62" y2="150"/>
+    <line x1="40" y1="180" x2="62" y2="180"/>
+    <line x1="40" y1="210" x2="62" y2="210"/>
+    <line x1="40" y1="240" x2="62" y2="240"/>
+    <line x1="40" y1="270" x2="62" y2="270"/>
+    <line x1="40" y1="300" x2="62" y2="300"/>
+    <line x1="40" y1="330" x2="62" y2="330"/>
   </g>
   <!-- roundtrip arrows (behind the barlines) -->
-  <g fill="none" stroke="#8a93a2" stroke-width="15" stroke-linecap="round">
+  <g fill="none" stroke="#98a2b2" stroke-width="16" stroke-linecap="round">
     <path d="M305 141 H396 Q424 141 424 110 Q424 79 396 79 H364"/>
-    <path d="M305 225 H445"/>
+    <path d="M305 225 H428"/>
     <path d="M305 309 H396 Q424 309 424 340 Q424 371 396 371 H364"/>
   </g>
-  <g fill="#8a93a2" stroke="none">
-    <polygon points="366,62 366,96 336,79"/>
-    <polygon points="443,208 443,242 473,225"/>
-    <polygon points="366,354 366,388 336,371"/>
+  <g fill="#98a2b2" stroke="none">
+    <polygon points="366,61 366,97 334,79"/>
+    <polygon points="426,207 426,243 458,225"/>
+    <polygon points="366,353 366,389 334,371"/>
   </g>
   <!-- barlines + beam -->
   <g fill="#e6eaf2">
     <rect x="107" y="20" width="22" height="395" rx="6"/>
     <rect x="211" y="20" width="22" height="395" rx="6"/>
     <rect x="319" y="20" width="22" height="395" rx="6"/>
-    <rect x="211" y="56" width="130" height="26" rx="6"/>
+    <rect x="199" y="56" width="149" height="26" rx="6"/>
   </g>
   <!-- notes: thin stems + heads -->
   <g fill="url(#copperD)">
-    <rect x="94" y="116" width="12" height="240" rx="6"/>
-    <rect x="198" y="140" width="12" height="172" rx="6"/>
-    <rect x="306" y="104" width="12" height="168" rx="6"/>
-    <ellipse cx="90" cy="347" rx="40" ry="28" transform="rotate(-22 90 347)"/>
-    <ellipse cx="198" cy="303" rx="40" ry="28" transform="rotate(-22 198 303)"/>
-    <ellipse cx="303" cy="263" rx="40" ry="28" transform="rotate(-22 303 263)"/>
+    <rect x="92" y="116" width="14" height="240" rx="7"/>
+    <rect x="196" y="140" width="14" height="172" rx="7"/>
+    <rect x="304" y="104" width="14" height="168" rx="7"/>
+    <ellipse cx="88" cy="347" rx="38" ry="29" transform="rotate(-20 88 347)"/>
+    <ellipse cx="196" cy="303" rx="38" ry="29" transform="rotate(-20 196 303)"/>
+    <ellipse cx="301" cy="263" rx="38" ry="29" transform="rotate(-20 301 263)"/>
   </g>
 </svg>
