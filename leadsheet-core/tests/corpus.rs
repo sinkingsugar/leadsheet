@@ -83,7 +83,16 @@ fn nv(pitch: u8, cell: u32, dur: u32, vel: u8) -> QNote {
 }
 
 fn song(name: &str, bpm: f64, meter: (u32, u32), n_bars: u32, tracks: Vec<QTrack>) -> QSong {
-    QSong { name: name.into(), bpm, meter, key: None, swing: None, n_bars, tracks }
+    QSong {
+        name: name.into(),
+        bpm,
+        meter,
+        bar_meters: Vec::new(),
+        key: None,
+        swing: None,
+        n_bars,
+        tracks,
+    }
 }
 
 fn track(name: &str, program: u8, is_drums: bool, mut notes: Vec<QNote>) -> QTrack {

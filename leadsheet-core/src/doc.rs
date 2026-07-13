@@ -132,6 +132,10 @@ pub struct PatternDef {
     pub track: usize,
     /// Base velocity from the `@dyn` mark.
     pub base_vel: u8,
+    /// Meter override (`P5 drums 3/4`); `None` = the header meter. Every
+    /// bar of this pattern is in this meter, and all patterns stacked in
+    /// one arrangement row must agree on it.
+    pub meter: Option<(u32, u32)>,
     /// Informational kinship (`~P<n>`) for melodic/chordal patterns.
     /// (Drum variants carry their base in [`DrumsBody::variant_base`].)
     pub kin: Option<usize>,
@@ -155,6 +159,8 @@ pub struct DirectItem {
     pub bar: u32,
     pub track: usize,
     pub base_vel: u8,
+    /// Meter override (`b12 lead 3/4 | ... |`); `None` = the header meter.
+    pub meter: Option<(u32, u32)>,
     pub body: PatternBody,
 }
 
@@ -261,7 +267,18 @@ impl Document {
                     )));
                 }
             }
-            validate_body(&p.body, cpb, bar, &self.patterns[..idx], p.track, format!("P{}", p.id))?;
+            if let Some(m) = p.meter {
+                validate_meter(m, &format!("P{}", p.id))?;
+            }
+            let (pcpb, pbar) = body_geometry(&self.header, p.meter);
+            validate_body(
+                &p.body,
+                pcpb,
+                pbar,
+                &self.patterns[..idx],
+                p.track,
+                format!("P{}", p.id),
+            )?;
         }
         let mut total_bars = 0u64;
         for item in &self.timeline {
@@ -314,10 +331,14 @@ impl Document {
                         )));
                     }
                     validate_base_vel(d.base_vel, &format!("b{}", d.bar))?;
+                    if let Some(m) = d.meter {
+                        validate_meter(m, &format!("b{}", d.bar))?;
+                    }
+                    let (dcpb, dbar) = body_geometry(&self.header, d.meter);
                     validate_body(
                         &d.body,
-                        cpb,
-                        bar,
+                        dcpb,
+                        dbar,
                         &self.patterns,
                         d.track,
                         format!("b{}", d.bar),
@@ -329,16 +350,11 @@ impl Document {
         if total_bars > 100_000 {
             return Err(doc_err(format!("{total_bars} bars is beyond the 100000-bar limit")));
         }
-        // The renderable tick domain: MIDI deltas are u28 and midly
-        // masks silently past them, so a validated song must fit
-        // MAX_SONG_TICKS or render would wrap positions. (total_bars is
-        // <= 100k here, so the product fits i64 with room to spare.)
-        if total_bars as i64 * bar.ticks() > crate::grid::MAX_SONG_TICKS {
-            return Err(doc_err(format!(
-                "{total_bars} bars of {}/{} exceed the renderable tick domain (2^28 MIDI deltas)",
-                self.header.meter.0, self.header.meter.1
-            )));
-        }
+        // The global bar-meter map: stack agreement, direct/row meter
+        // conflicts, and the renderable tick domain (u28 MIDI deltas;
+        // midly masks silently past them) all check here.
+        build_bar_meters(&self.header, &self.patterns, &self.timeline)?;
+        let _ = (cpb, bar);
         Ok(())
     }
 
@@ -351,8 +367,19 @@ impl Document {
     /// negligible re-check.
     pub fn resolve(&self) -> Result<QSong, Error> {
         self.validate()?;
-        let cpb = self.header.cells_per_bar();
-        let bar_len = self.header.bar_ticks();
+        let bar_meters = build_bar_meters(&self.header, &self.patterns, &self.timeline)?;
+        // Bar start ticks: starts[i] opens bar i, starts[len] ends the song.
+        let mut starts: Vec<MusicalTime> = Vec::with_capacity(bar_meters.len() + 1);
+        let mut t = MusicalTime::ZERO;
+        for m in &bar_meters {
+            starts.push(t);
+            t += crate::grid::meter_ticks(*m);
+        }
+        starts.push(t);
+        let geometry = |abs_bar: u32| -> (MusicalTime, MusicalTime, u32) {
+            let m = bar_meters[abs_bar as usize];
+            (starts[abs_bar as usize], crate::grid::meter_ticks(m), crate::grid::meter_cells(m))
+        };
         let mut b = Builder {
             tracks: self
                 .instruments
@@ -378,7 +405,6 @@ impl Document {
         }
 
         let mut next_bar = 0u32;
-        let mut max_bar = 0u32;
         for item in &self.timeline {
             match item {
                 TimelineItem::Row(row) => {
@@ -404,15 +430,16 @@ impl Document {
                                 // 1-bar patterns repeat over a longer unit.
                                 let bar_in_body = if p.body.n_bars() == 1 { 0 } else { offset };
                                 let lanes = pattern_lanes.get(&p.id);
+                                let (bar_start, blen, bcpb) = geometry(next_bar + offset);
                                 b.apply_body(
                                     &p.body,
                                     lanes.map(Vec::as_slice),
                                     p.track,
                                     bar_in_body,
-                                    next_bar + offset,
+                                    bar_start,
                                     p.base_vel,
-                                    cpb,
-                                    bar_len,
+                                    bcpb,
+                                    blen,
                                 )?;
                             }
                         }
@@ -426,39 +453,159 @@ impl Document {
                     };
                     let n = item.body.n_bars();
                     for offset in 0..n {
+                        let (bar_start, blen, bcpb) = geometry(item.bar - 1 + offset);
                         b.apply_body(
                             &item.body,
                             lanes.as_deref(),
                             item.track,
                             offset,
-                            item.bar - 1 + offset,
+                            bar_start,
                             item.base_vel,
-                            cpb,
-                            bar_len,
+                            bcpb,
+                            blen,
                         )?;
                     }
-                    max_bar = max_bar.max(item.bar + n - 1);
                 }
             }
         }
 
-        let mut max_end = MusicalTime::ZERO;
         for t in &mut b.tracks {
             t.notes.sort_by(|a, x| a.onset.cmp(&x.onset).then(a.pitch.cmp(&x.pitch)));
-            for n in &t.notes {
-                max_end = max_end.max(n.onset + n.dur);
-            }
         }
+        let uniform = bar_meters.iter().all(|m| *m == self.header.meter);
         Ok(QSong {
             name: self.header.name.clone(),
             bpm: self.header.bpm,
             meter: self.header.meter,
+            bar_meters: if uniform { Vec::new() } else { bar_meters.clone() },
             key: self.header.key,
             swing: self.header.swing,
-            n_bars: max_end.spans_ceil(bar_len).max(next_bar).max(max_bar),
+            n_bars: bar_meters.len() as u32,
             tracks: b.tracks,
         })
     }
+}
+
+/// The (cells, ticks) of one bar of a body under its effective meter.
+fn body_geometry(header: &Header, meter: Option<(u32, u32)>) -> (u32, MusicalTime) {
+    let m = meter.unwrap_or(header.meter);
+    (crate::grid::meter_cells(m), crate::grid::meter_ticks(m))
+}
+
+/// Meter override values must spell like header meters.
+fn validate_meter(m: (u32, u32), who: &str) -> Result<(), Error> {
+    if m.1 != 4 && m.1 != 8 {
+        return Err(doc_err(format!("{who}: unsupported meter {}/{}", m.0, m.1)));
+    }
+    if m.0 == 0 || m.0 > 64 {
+        return Err(doc_err(format!("{who}: meter numerator {} out of range (1..=64)", m.0)));
+    }
+    Ok(())
+}
+
+/// Parser-facing wrapper: run the global meter pass on a built Document.
+pub(crate) fn check_bar_meters(d: &Document) -> Result<(), Error> {
+    build_bar_meters(&d.header, &d.patterns, &d.timeline).map(|_| ())
+}
+
+/// The global bar → meter assignment: rows claim bars in their stack's
+/// (agreed) meter, directs in theirs, unclaimed bars default to the
+/// header. Conflicting claims and the renderable tick domain error here
+/// — shared by validate() and resolve() so they cannot drift.
+fn build_bar_meters(
+    header: &Header,
+    patterns: &[PatternDef],
+    timeline: &[TimelineItem],
+) -> Result<Vec<(u32, u32)>, Error> {
+    let hm = header.meter;
+    let mut map: Vec<Option<(u32, u32)>> = Vec::new();
+    fn claim(map: &mut Vec<Option<(u32, u32)>>, bar: u64, m: (u32, u32)) -> Result<(), Error> {
+        if bar >= 100_000 {
+            return Err(doc_err(format!("bar {} is beyond the 100000-bar limit", bar + 1)));
+        }
+        let bar = bar as usize;
+        if bar >= map.len() {
+            map.resize(bar + 1, None);
+        }
+        match map[bar] {
+            Some(prev) if prev != m => Err(doc_err(format!(
+                "bar {}: meter {}/{} conflicts with {}/{} claimed earlier",
+                bar + 1,
+                m.0,
+                m.1,
+                prev.0,
+                prev.1
+            ))),
+            _ => {
+                map[bar] = Some(m);
+                Ok(())
+            }
+        }
+    }
+    let mut next = 0u64;
+    for item in timeline {
+        match item {
+            TimelineItem::Row(row) => {
+                let mut unit = 1u32;
+                let mut row_meter: Option<((u32, u32), usize)> = None;
+                for id in &row.stack {
+                    let p = patterns
+                        .iter()
+                        .find(|p| p.id == *id)
+                        .ok_or_else(|| doc_err(format!("unknown pattern P{id} in a row")))?;
+                    unit = unit.max(p.body.n_bars());
+                    let m = p.meter.unwrap_or(hm);
+                    if let Some((rm, rid)) = row_meter
+                        && rm != m
+                    {
+                        return Err(doc_err(format!(
+                            "one bar-stack mixes meters: P{rid} is {}/{} but P{id} is {}/{}",
+                            rm.0, rm.1, m.0, m.1
+                        )));
+                    }
+                    row_meter = Some((m, *id));
+                }
+                let bars = row.reps as u64 * unit as u64;
+                match row_meter {
+                    // A silent row ([z]) claims no meter — it advances
+                    // the timeline and defaults to the header unless a
+                    // direct at the same bar says otherwise.
+                    None => {
+                        if next + bars > 100_000 {
+                            return Err(doc_err(format!(
+                                "bar {} is beyond the 100000-bar limit",
+                                next + bars
+                            )));
+                        }
+                        if (next + bars) as usize > map.len() {
+                            map.resize((next + bars) as usize, None);
+                        }
+                    }
+                    Some((m, _)) => {
+                        for k in 0..bars {
+                            claim(&mut map, next + k, m)?;
+                        }
+                    }
+                }
+                next += bars;
+            }
+            TimelineItem::Direct(d) => {
+                let m = d.meter.unwrap_or(hm);
+                for k in 0..d.body.n_bars() as u64 {
+                    claim(&mut map, d.bar as u64 - 1 + k, m)?;
+                }
+            }
+        }
+    }
+    let map: Vec<(u32, u32)> = map.into_iter().map(|m| m.unwrap_or(hm)).collect();
+    let total: i64 = map.iter().map(|m| crate::grid::meter_ticks(*m).ticks()).sum();
+    if total > crate::grid::MAX_SONG_TICKS {
+        return Err(doc_err(format!(
+            "{} bars exceed the renderable tick domain (2^28 MIDI deltas)",
+            map.len()
+        )));
+    }
+    Ok(map)
 }
 
 /// Full lanes for a drums body: the variant diff merged over its base's
@@ -497,17 +644,32 @@ impl QSong {
             swing: self.swing,
         })?;
         let mut names = std::collections::HashSet::new();
-        // Bounded given the validated header: bar_ticks <= 64 * 960
-        // and n_bars is u32, so the product stays far below i64::MAX.
-        let end = self.bar_ticks() * self.n_bars as i64;
-        // …but it must also fit the renderable tick domain (u28 MIDI
-        // deltas; midly masks silently past them) or render would wrap.
+        if !self.bar_meters.is_empty() {
+            if self.bar_meters.len() != self.n_bars as usize {
+                return Err(doc_err(format!(
+                    "bar_meters carries {} entries for {} bars",
+                    self.bar_meters.len(),
+                    self.n_bars
+                )));
+            }
+            for (i, m) in self.bar_meters.iter().enumerate() {
+                validate_meter(*m, &format!("bar {}", i + 1))?;
+            }
+        }
+        // Bounded given the validated header/meters: bar ticks <= 64 *
+        // 960 each and n_bars is u32, so the sum stays far below
+        // i64::MAX. It must also fit the renderable tick domain (u28
+        // MIDI deltas; midly masks silently past them) or render wraps.
+        let end = self.total_ticks();
         if end.ticks() > crate::grid::MAX_SONG_TICKS {
             return Err(doc_err(format!(
-                "{} bars of {}/{} exceed the renderable tick domain (2^28 MIDI deltas)",
-                self.n_bars, self.meter.0, self.meter.1
+                "{} bars exceed the renderable tick domain (2^28 MIDI deltas)",
+                self.n_bars
             )));
         }
+        // Bar boundaries, for the drum-containment rule below (a lane
+        // spelling never crosses a barline).
+        let starts = self.bar_starts();
         for t in &self.tracks {
             if !valid_name(&t.name) {
                 return Err(doc_err(format!(
@@ -583,18 +745,25 @@ impl QSong {
                         t.name
                     )));
                 }
-                let extent = n.dur;
                 // Total arithmetic (A2): a hostile onset near i64::MAX
                 // passes the sign checks and would overflow a bare add —
                 // the validator is the one thing that must never trust
                 // its input.
-                match n.onset.ticks().checked_add(extent.ticks()) {
-                    Some(e) if e <= end.ticks() => {}
+                let note_end = match n.onset.ticks().checked_add(n.dur.ticks()) {
+                    Some(e) if e <= end.ticks() => MusicalTime(e),
                     _ => {
                         return Err(doc_err(format!(
                             "{}: a note ends past n_bars (emission would drop it)",
                             t.name
                         )));
+                    }
+                };
+                if t.is_drums {
+                    // A lane spelling lives within one bar; a crossing
+                    // span would silently drop at emission.
+                    let bar = starts.partition_point(|s| *s <= n.onset).saturating_sub(1);
+                    if note_end > starts[(bar + 1).min(starts.len() - 1)] {
+                        return Err(doc_err(format!("{}: a drum span crosses a barline", t.name)));
                     }
                 }
             }
@@ -909,7 +1078,8 @@ struct Builder {
 }
 
 impl Builder {
-    /// Place one bar of a body at absolute bar `abs_bar`. For drums,
+    /// Place one bar of a body opening at `bar_start` (`cpb`/`bar_len`
+    /// are that bar's geometry — meters can change per bar). For drums,
     /// `drum_lanes` carries the variant-resolved lanes.
     #[allow(clippy::too_many_arguments)]
     fn apply_body(
@@ -918,7 +1088,7 @@ impl Builder {
         drum_lanes: Option<&[(u8, Vec<LaneItem>)]>,
         track: usize,
         bar_in_body: u32,
-        abs_bar: u32,
+        bar_start: MusicalTime,
         base: u8,
         cpb: u32,
         bar_len: MusicalTime,
@@ -926,7 +1096,6 @@ impl Builder {
         if track >= self.tracks.len() {
             return Err(doc_err(format!("track index {track} out of range")));
         }
-        let bar_start = bar_len * abs_bar as i64;
         match body {
             PatternBody::Melodic(bars) => {
                 let bar = bars

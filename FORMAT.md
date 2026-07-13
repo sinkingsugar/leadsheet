@@ -52,6 +52,17 @@ one-bar patterns; hand-written patterns may span several bars:
 `P2 piano* | Am . . . | F . C . |` (chord holds don't cross the internal
 bar lines — restate the chord).
 
+**Meter overrides.** The header meter is the default; a pattern or
+direct bar may claim another with a meter token after the instrument:
+`P5 drums 3/4`, `P7 keys* 3/4 | Am . . |`, `b12 lead 6/8 | ... |`. All
+bars of that pattern are in its meter, its bodies size accordingly
+(a 3/4 melodic bar sums to 12 cells, a 3/4 chord bar has 3 columns),
+and every pattern stacked in one arrangement row must agree on the
+meter. A `[z]` row claims no meter (a direct at that bar may supply
+one); unclaimed bars default to the header. Two claims on one bar must
+match, or it's an error. Rendered MIDI carries a time-signature event
+at every change.
+
 ## Pattern bodies — three kinds
 
 **Melodic** — `P1 bass | A,,4 ^F2 z2 [CEG]4 |`

@@ -16,6 +16,7 @@ fn tricky_qsong() -> QSong {
         name: "tricky".into(),
         bpm: 132.5,
         meter: (4, 4),
+        bar_meters: Vec::new(),
         key: None,
         swing: None,
         n_bars: 5,

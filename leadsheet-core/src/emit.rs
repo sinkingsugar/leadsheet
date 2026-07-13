@@ -108,16 +108,29 @@ fn base_velocity(segs: &[Seg], is_drums: bool) -> u8 {
     notation::vel_to_dynamic(votes[(votes.len() - 1) / 2]).1
 }
 
+/// The bar containing `pos`: last start <= pos (`starts` has n_bars + 1
+/// entries; see [`QSong::bar_starts`]).
+fn bar_of(starts: &[MusicalTime], pos: MusicalTime) -> usize {
+    starts.partition_point(|s| *s <= pos).saturating_sub(1).min(starts.len().saturating_sub(2))
+}
+
 /// Split a track's notes at bar boundaries: per-bar segment lists.
-/// Drum notes never span (one-shots on the 16th grid).
-fn split_bars(track: &QTrack, bar_len: MusicalTime, n_bars: u32) -> Vec<Vec<Seg>> {
+/// Drum notes never span bars (validated); bars may differ in length
+/// when the song changes meter.
+fn split_bars(track: &QTrack, starts: &[MusicalTime]) -> Vec<Vec<Seg>> {
+    let n_bars = starts.len().saturating_sub(1);
     let mut bars: Vec<Vec<Seg>> = (0..n_bars).map(|_| Vec::new()).collect();
+    if n_bars == 0 {
+        return bars;
+    }
     for (note, n) in track.notes.iter().enumerate() {
         if track.is_drums {
-            let bar = n.onset / bar_len;
-            if let Some(slot) = bars.get_mut(bar as usize) {
+            let bar = bar_of(starts, n.onset);
+            if n.onset < starts[n_bars]
+                && let Some(slot) = bars.get_mut(bar)
+            {
                 slot.push(Seg {
-                    onset: n.onset % bar_len,
+                    onset: n.onset - starts[bar],
                     dur: n.dur,
                     strokes: n.strokes,
                     stroke_mask: n.stroke_mask,
@@ -132,23 +145,20 @@ fn split_bars(track: &QTrack, bar_len: MusicalTime, n_bars: u32) -> Vec<Vec<Seg>
         }
         let end = n.onset + n.dur;
         let mut pos = n.onset;
-        while pos < end {
-            let bar = pos / bar_len;
-            let bar_end = bar_len * (bar + 1);
-            let seg_end = end.min(bar_end);
-            if let Some(slot) = bars.get_mut(bar as usize) {
-                slot.push(Seg {
-                    onset: pos - bar_len * bar,
-                    dur: seg_end - pos,
-                    strokes: 1,
-                    stroke_mask: 1,
-                    pitch: n.pitch,
-                    vel: n.vel,
-                    tie_in: pos > n.onset,
-                    tie_out: seg_end < end,
-                    note,
-                });
-            }
+        while pos < end && pos < starts[n_bars] {
+            let bar = bar_of(starts, pos);
+            let seg_end = end.min(starts[bar + 1]);
+            bars[bar].push(Seg {
+                onset: pos - starts[bar],
+                dur: seg_end - pos,
+                strokes: 1,
+                stroke_mask: 1,
+                pitch: n.pitch,
+                vel: n.vel,
+                tie_in: pos > n.onset,
+                tie_out: seg_end < end,
+                note,
+            });
             pos = seg_end;
         }
     }
@@ -409,20 +419,25 @@ fn lanes_sorted(lanes: &Lanes) -> Vec<(u8, Vec<LaneItem>)> {
 /// One bar's emitted form. `base` is the pattern's dynamic bucket; `text`
 /// is the canonical spelling (dedup key + kinship similarity input).
 enum Body {
-    Melodic { base: u8, voices: Vec<Vec<Tok>>, text: String },
-    Chordal { base: u8, cols: Vec<ChordCol>, text: String },
-    Drums { base: u8, lanes: Lanes },
+    Melodic { base: u8, meter: (u32, u32), voices: Vec<Vec<Tok>>, text: String },
+    Chordal { base: u8, meter: (u32, u32), cols: Vec<ChordCol>, text: String },
+    Drums { base: u8, meter: (u32, u32), lanes: Lanes },
 }
 
 impl Body {
-    /// Dedup key: kind tag + dynamic + content (a chordal body must never
-    /// collide with an identical-looking melodic one, nor `f` with `p`).
+    /// Dedup key: kind tag + dynamic + meter + content (a chordal body
+    /// must never collide with an identical-looking melodic one, nor `f`
+    /// with `p`, nor a 3/4 bar with a 6/8 one that spells the same).
     fn key(&self) -> String {
         match self {
-            Body::Melodic { base, text, .. } => format!("m{base}:{text}"),
-            Body::Chordal { base, text, .. } => format!("c{base}:{text}"),
-            Body::Drums { base, lanes } => {
-                let mut s = format!("d{base}:");
+            Body::Melodic { base, meter, text, .. } => {
+                format!("m{base}:{}/{}:{text}", meter.0, meter.1)
+            }
+            Body::Chordal { base, meter, text, .. } => {
+                format!("c{base}:{}/{}:{text}", meter.0, meter.1)
+            }
+            Body::Drums { base, meter, lanes } => {
+                let mut s = format!("d{base}:{}/{}:", meter.0, meter.1);
                 for (pitch, items) in lanes {
                     s.push_str(&pitch.to_string());
                     s.push('=');
@@ -439,6 +454,14 @@ impl Body {
             Body::Melodic { base, .. } | Body::Chordal { base, .. } | Body::Drums { base, .. } => {
                 *base
             }
+        }
+    }
+
+    fn meter(&self) -> (u32, u32) {
+        match self {
+            Body::Melodic { meter, .. }
+            | Body::Chordal { meter, .. }
+            | Body::Drums { meter, .. } => *meter,
         }
     }
 }
@@ -498,20 +521,23 @@ fn instrument_field(t: &Instrument) -> String {
 /// with self-similarity section labels — the compressor's Document.
 pub fn from_qsong(q: &QSong) -> Document {
     let flats = q.key.map(|k| k.use_flats()).unwrap_or(false);
-    let cpb = q.cells_per_bar();
-    let bar_len = q.bar_ticks();
+    let starts = q.bar_starts();
     let bodies: Vec<Vec<Option<Body>>> = q
         .tracks
         .iter()
         .map(|t| {
             // Reconstructed velocity per note (see record_reconstructed_vels).
             let mut recon: Vec<Option<u8>> = vec![None; t.notes.len()];
-            split_bars(t, bar_len, q.n_bars)
+            split_bars(t, &starts)
                 .into_iter()
-                .map(|mut segs| {
+                .enumerate()
+                .map(|(bar, mut segs)| {
                     if segs.is_empty() {
                         return None;
                     }
+                    let meter = q.bar_meter(bar as u32);
+                    let bar_len = starts[bar + 1] - starts[bar];
+                    let cpb = crate::grid::meter_cells(meter);
                     // Tie-in segments vote and mark with the velocity parse
                     // will assign them (fixed where the note started).
                     for s in &mut segs {
@@ -526,15 +552,13 @@ pub fn from_qsong(q: &QSong) -> Document {
                         record_reconstructed_vels(&segs, base, &mut recon);
                     }
                     Some(if t.is_drums {
-                        Body::Drums { base, lanes: drum_lane_map(&segs, cpb, base) }
+                        Body::Drums { base, meter, lanes: drum_lane_map(&segs, cpb, base) }
                     } else if let Some(cols) =
                         // Chord columns are quarter-note beats; only /4 meters.
-                        (q.meter.1 == 4)
-                            .then(|| try_chordal(&segs, bar_len))
-                            .flatten()
+                        (meter.1 == 4).then(|| try_chordal(&segs, bar_len)).flatten()
                     {
                         let text = spell_chordal_bar(&cols, flats);
-                        Body::Chordal { base, cols, text }
+                        Body::Chordal { base, meter, cols, text }
                     } else {
                         let voices = bar_voices(&segs, bar_len, base);
                         let text = voices
@@ -542,7 +566,7 @@ pub fn from_qsong(q: &QSong) -> Document {
                             .map(|v| spell_voice(v, flats))
                             .collect::<Vec<_>>()
                             .join(" & ");
-                        Body::Melodic { base, voices, text }
+                        Body::Melodic { base, meter, voices, text }
                     })
                 })
                 .collect()
@@ -571,13 +595,20 @@ pub fn from_qsong(q: &QSong) -> Document {
     // Variant planning: best earlier same-track same-kind pattern.
     let forms: Vec<PatternForm> = (0..set.patterns.len())
         .map(|i| match pattern_bodies[i] {
-            Body::Drums { lanes: lanes_i, .. } => {
+            Body::Drums { lanes: lanes_i, meter: meter_i, .. } => {
                 let mut best: Option<(usize, usize)> = None; // (cost, base)
                 for (j, body_j) in pattern_bodies.iter().enumerate().take(i) {
                     if set.patterns[j].track != set.patterns[i].track {
                         continue;
                     }
-                    let Body::Drums { lanes: lanes_j, .. } = body_j else { continue };
+                    let Body::Drums { lanes: lanes_j, meter: meter_j, .. } = body_j else {
+                        continue;
+                    };
+                    // A variant inherits its base's lanes verbatim, so
+                    // the meters must match.
+                    if meter_j != meter_i {
+                        continue;
+                    }
                     let pitches: std::collections::BTreeSet<u8> =
                         lanes_i.keys().chain(lanes_j.keys()).copied().collect();
                     let cost = pitches.iter().filter(|p| lanes_i.get(p) != lanes_j.get(p)).count();
@@ -590,7 +621,7 @@ pub fn from_qsong(q: &QSong) -> Document {
                         let Body::Drums { lanes: base_lanes, .. } = pattern_bodies[base] else {
                             unreachable!()
                         };
-                        let cpb = q.cells_per_bar() as usize;
+                        let cpb = crate::grid::meter_cells(pattern_bodies[i].meter()) as usize;
                         let mut diff: Vec<(u8, Vec<LaneItem>)> = Vec::new();
                         let pitches: std::collections::BTreeSet<u8> =
                             lanes_i.keys().chain(base_lanes.keys()).copied().collect();
@@ -658,7 +689,14 @@ pub fn from_qsong(q: &QSong) -> Document {
                     (kin.map(|j| set.patterns[j].id), PatternBody::Chordal(vec![cols.clone()]))
                 }
             };
-            PatternDef { id: p.id, track: p.track, base_vel: pattern_bodies[i].base(), kin, body }
+            PatternDef {
+                id: p.id,
+                track: p.track,
+                base_vel: pattern_bodies[i].base(),
+                meter: Some(pattern_bodies[i].meter()).filter(|m| *m != q.meter),
+                kin,
+                body,
+            }
         })
         .collect();
     let timeline: Vec<TimelineItem> = set
@@ -748,9 +786,10 @@ pub fn emit_document(d: &Document) -> String {
         let name = &d.instruments[p.track].name;
         let star = if matches!(p.body, PatternBody::Chordal(_)) { "*" } else { "" };
         let dynamic = dyn_suffix(p.base_vel);
+        let meter = meter_suffix(p.meter.filter(|m| *m != d.header.meter));
         match p.kin {
-            Some(k) => format!("{name}{star}{dynamic} ~P{k}"),
-            None => format!("{name}{star}{dynamic}"),
+            Some(k) => format!("{name}{star}{dynamic}{meter} ~P{k}"),
+            None => format!("{name}{star}{dynamic}{meter}"),
         }
     };
     if !d.patterns.is_empty() {
@@ -768,10 +807,11 @@ pub fn emit_document(d: &Document) -> String {
                     Some(base) => {
                         let _ = writeln!(
                             out,
-                            "P{:<id_w$} {}{} ~P{base}",
+                            "P{:<id_w$} {}{}{} ~P{base}",
                             p.id,
                             d.instruments[p.track].name,
-                            dyn_suffix(p.base_vel)
+                            dyn_suffix(p.base_vel),
+                            meter_suffix(p.meter.filter(|m| *m != d.header.meter))
                         );
                         if !db.lanes.is_empty() {
                             let _ = writeln!(out, "{}", render_lanes(&db.lanes));
@@ -780,10 +820,11 @@ pub fn emit_document(d: &Document) -> String {
                     None => {
                         let _ = writeln!(
                             out,
-                            "P{:<id_w$} {}{}",
+                            "P{:<id_w$} {}{}{}",
                             p.id,
                             d.instruments[p.track].name,
-                            dyn_suffix(p.base_vel)
+                            dyn_suffix(p.base_vel),
+                            meter_suffix(p.meter.filter(|m| *m != d.header.meter))
                         );
                         let _ = writeln!(out, "{}", render_lanes(&db.lanes));
                     }
@@ -850,14 +891,15 @@ pub fn emit_document(d: &Document) -> String {
 fn emit_direct(out: &mut String, d: &Document, di: &DirectItem, flats: bool) {
     let name = &d.instruments[di.track].name;
     let dynamic = dyn_suffix(di.base_vel);
+    let meter = meter_suffix(di.meter.filter(|m| *m != d.header.meter));
     match &di.body {
         PatternBody::Drums(db) => {
             match db.variant_base {
                 Some(base) => {
-                    let _ = writeln!(out, "b{} {name}{dynamic} ~P{base}", di.bar);
+                    let _ = writeln!(out, "b{} {name}{dynamic}{meter} ~P{base}", di.bar);
                 }
                 None => {
-                    let _ = writeln!(out, "b{} {name}{dynamic}", di.bar);
+                    let _ = writeln!(out, "b{} {name}{dynamic}{meter}", di.bar);
                 }
             }
             if !db.lanes.is_empty() {
@@ -867,14 +909,19 @@ fn emit_direct(out: &mut String, d: &Document, di: &DirectItem, flats: bool) {
         PatternBody::Melodic(bars) => {
             let text =
                 bars.iter().map(|b| spell_melodic_bar(b, flats)).collect::<Vec<_>>().join(" | ");
-            let _ = writeln!(out, "b{} {name}{dynamic} | {text} |", di.bar);
+            let _ = writeln!(out, "b{} {name}{dynamic}{meter} | {text} |", di.bar);
         }
         PatternBody::Chordal(bars) => {
             let text =
                 bars.iter().map(|b| spell_chordal_bar(b, flats)).collect::<Vec<_>>().join(" | ");
-            let _ = writeln!(out, "b{} {name}*{dynamic} | {text} |", di.bar);
+            let _ = writeln!(out, "b{} {name}*{dynamic}{meter} | {text} |", di.bar);
         }
     }
+}
+
+/// ` N/D` when a pattern/direct overrides the header meter.
+fn meter_suffix(m: Option<(u32, u32)>) -> String {
+    m.map(|(n, d)| format!(" {n}/{d}")).unwrap_or_default()
 }
 
 /// QSong → canonical text (the historical entry point): structure is

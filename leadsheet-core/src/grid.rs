@@ -188,8 +188,13 @@ pub struct QSong {
     pub name: String,
     pub bpm: f64,
     /// (numerator, denominator): declared by the source when available,
-    /// else detected (4/4, 3/4, 6/8 templates).
+    /// else detected (4/4, 3/4, 6/8 templates). With meter overrides
+    /// this is the *default* (header) meter; see [`QSong::bar_meters`].
     pub meter: (u32, u32),
+    /// Per-bar meters when the song changes meter: empty = every bar is
+    /// `meter` (the uniform case, and what quantization produces);
+    /// otherwise exactly `n_bars` entries.
+    pub bar_meters: Vec<(u32, u32)>,
     /// Estimated key (header + spelling); `None` = unknown, spell sharps.
     pub key: Option<crate::key::Key>,
     /// Swing feel (authoring; see [`Swing`]).
@@ -198,15 +203,53 @@ pub struct QSong {
     pub tracks: Vec<QTrack>,
 }
 
+/// Bar length in ticks for one meter (exact for /4 and /8 denominators).
+pub fn meter_ticks(meter: (u32, u32)) -> MusicalTime {
+    MusicalTime(meter.0 as i64 * TICKS_PER_BEAT * 4 / meter.1 as i64)
+}
+
+/// Bar length in 16th cells for one meter.
+pub fn meter_cells(meter: (u32, u32)) -> u32 {
+    meter.0 * CELLS_PER_BEAT * 4 / meter.1
+}
+
 impl QSong {
-    /// Bar length in the text format's unit (16th cells).
+    /// Bar length in the text format's unit (16th cells) — the *default*
+    /// meter's; per-bar values come from [`QSong::bar_meter`].
     pub fn cells_per_bar(&self) -> u32 {
-        self.meter.0 * CELLS_PER_BEAT * 4 / self.meter.1
+        meter_cells(self.meter)
     }
 
-    /// Bar length in ticks (exact for /4 and /8 denominators).
+    /// Bar length in ticks — the *default* meter's.
     pub fn bar_ticks(&self) -> MusicalTime {
-        MusicalTime(self.meter.0 as i64 * TICKS_PER_BEAT * 4 / self.meter.1 as i64)
+        meter_ticks(self.meter)
+    }
+
+    /// The meter of one bar (the default unless overridden).
+    pub fn bar_meter(&self, bar: u32) -> (u32, u32) {
+        self.bar_meters.get(bar as usize).copied().unwrap_or(self.meter)
+    }
+
+    /// Bar start ticks, one per bar plus the song end: `starts[i]` is
+    /// where bar i begins, `starts[n_bars]` is the total length.
+    pub fn bar_starts(&self) -> Vec<MusicalTime> {
+        let mut starts = Vec::with_capacity(self.n_bars as usize + 1);
+        let mut t = MusicalTime::ZERO;
+        for bar in 0..self.n_bars {
+            starts.push(t);
+            t += meter_ticks(self.bar_meter(bar));
+        }
+        starts.push(t);
+        starts
+    }
+
+    /// Total song length in ticks (per-bar aware).
+    pub fn total_ticks(&self) -> MusicalTime {
+        if self.bar_meters.is_empty() {
+            self.bar_ticks() * self.n_bars as i64
+        } else {
+            self.bar_meters.iter().map(|m| meter_ticks(*m)).fold(MusicalTime::ZERO, |a, b| a + b)
+        }
     }
 
     pub fn cell_sec(&self) -> f64 {
@@ -343,8 +386,16 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
         })
         .collect();
 
-    let mut qsong =
-        QSong { name: song.name.clone(), bpm, meter, key: None, swing: None, n_bars: 0, tracks };
+    let mut qsong = QSong {
+        name: song.name.clone(),
+        bpm,
+        meter,
+        bar_meters: Vec::new(),
+        key: None,
+        swing: None,
+        n_bars: 0,
+        tracks,
+    };
     qsong.n_bars = max_end.spans_ceil(qsong.bar_ticks());
     qsong.key = crate::key::detect(&qsong);
 

@@ -31,24 +31,43 @@ fn swing_delta(swing: Option<crate::grid::Swing>, onset: MusicalTime) -> i64 {
 pub fn render(q: &QSong) -> Vec<u8> {
     let mut smf = Smf::new(Header::new(Format::Parallel, Timing::Metrical(u15::new(PPQ))));
 
-    // Conductor track: tempo + time signature.
+    // Conductor track: tempo, then a time signature at every bar where
+    // the meter changes (bar starts come from the per-bar meter map).
     let us_per_qn = (60e6 / q.bpm).round().clamp(1.0, 16_777_215.0) as u32;
-    smf.tracks.push(vec![
-        TrackEvent {
-            delta: u28::new(0),
-            kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(us_per_qn))),
-        },
-        TrackEvent {
-            delta: u28::new(0),
-            kind: TrackEventKind::Meta(MetaMessage::TimeSignature(
-                q.meter.0 as u8,
-                q.meter.1.trailing_zeros() as u8,
-                24,
-                8,
-            )),
-        },
-        TrackEvent { delta: u28::new(0), kind: TrackEventKind::Meta(MetaMessage::EndOfTrack) },
-    ]);
+    let ts_event = |meter: (u32, u32), delta: u32| TrackEvent {
+        delta: u28::new(delta),
+        kind: TrackEventKind::Meta(MetaMessage::TimeSignature(
+            meter.0 as u8,
+            meter.1.trailing_zeros() as u8,
+            24,
+            8,
+        )),
+    };
+    let mut conductor = vec![TrackEvent {
+        delta: u28::new(0),
+        kind: TrackEventKind::Meta(MetaMessage::Tempo(u24::new(us_per_qn))),
+    }];
+    if q.n_bars == 0 || q.bar_meters.is_empty() {
+        conductor.push(ts_event(q.meter, 0));
+    } else {
+        let starts = q.bar_starts();
+        let mut last: Option<(u32, u32)> = None;
+        let mut last_tick = 0u32;
+        for bar in 0..q.n_bars {
+            let m = q.bar_meter(bar);
+            if last != Some(m) {
+                let tick = starts[bar as usize].ticks() as u32;
+                conductor.push(ts_event(m, tick - last_tick));
+                last_tick = tick;
+                last = Some(m);
+            }
+        }
+    }
+    conductor.push(TrackEvent {
+        delta: u28::new(0),
+        kind: TrackEventKind::Meta(MetaMessage::EndOfTrack),
+    });
+    smf.tracks.push(conductor);
 
     let mut next_melodic_channel = 0u8;
     for track in &q.tracks {

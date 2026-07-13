@@ -40,11 +40,11 @@ pub fn harmony(q: &QSong) -> Vec<Option<BarHarmony>> {
     let Some(key) = q.key.or_else(|| crate::key::detect(q)) else {
         return vec![None; q.n_bars as usize];
     };
-    let bar_len = q.bar_ticks();
+    let starts = q.bar_starts();
     let mut out = Vec::with_capacity(q.n_bars as usize);
     for bar in 0..q.n_bars {
-        let start = bar_len * bar as i64;
-        let end = start + bar_len;
+        let start = starts[bar as usize];
+        let end = starts[bar as usize + 1];
         let mut hist = [0f64; 12];
         let mut bass: Option<(MusicalTime, u8)> = None;
         for t in q.tracks.iter().filter(|t| !t.is_drums) {

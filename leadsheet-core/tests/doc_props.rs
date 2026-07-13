@@ -330,11 +330,15 @@ fn arb_instruments() -> impl Strategy<Value = Vec<Instrument>> {
 fn build_document(
     header: Header,
     instruments: Vec<Instrument>,
+    alt_meter: Option<(u32, u32)>,
     ids: Vec<usize>,
     pat_seeds: Vec<PatSeed>,
     item_seeds: Vec<ItemSeed>,
 ) -> Document {
-    let cpb = header.cells_per_bar();
+    // One doc-wide override keeps every bar-stack agreed by construction;
+    // mixed-meter interactions are unit-tested.
+    let eff = alt_meter.unwrap_or(header.meter);
+    let cpb = eff.0 * 4 * 4 / eff.1;
     let mut patterns: Vec<PatternDef> = Vec::new();
     if !instruments.is_empty() {
         for (id, (track_pick, vel_pick, kin_pick, var_pick, body)) in ids.iter().zip(&pat_seeds) {
@@ -357,6 +361,7 @@ fn build_document(
                 id: *id,
                 track,
                 base_vel: BUCKETS[*vel_pick as usize % BUCKETS.len()],
+                meter: alt_meter,
                 kin,
                 body,
             });
@@ -406,6 +411,7 @@ fn build_document(
                     bar: 1 + (bar % 8) as u32,
                     track,
                     base_vel: BUCKETS[vel as usize % BUCKETS.len()],
+                    meter: alt_meter,
                     body,
                 }));
             }
@@ -419,6 +425,7 @@ fn arb_document() -> impl Strategy<Value = Document> {
         (
             Just(header),
             Just(instruments),
+            prop::option::of(prop::sample::select(vec![(3u32, 4u32), (6, 8), (5, 4)])),
             prop::collection::btree_set(1usize..=99, 4)
                 .prop_map(|s| s.into_iter().collect::<Vec<_>>())
                 .prop_shuffle(),
@@ -434,8 +441,8 @@ fn arb_document() -> impl Strategy<Value = Document> {
             ),
             prop::collection::vec(item_seed(), 0..=5),
         )
-            .prop_map(|(header, instruments, ids, pat_seeds, item_seeds)| {
-                build_document(header, instruments, ids, pat_seeds, item_seeds)
+            .prop_map(|(header, instruments, alt, ids, pat_seeds, item_seeds)| {
+                build_document(header, instruments, alt, ids, pat_seeds, item_seeds)
             })
     })
 }
@@ -679,7 +686,8 @@ fn qsong_note(q: &mut QSong, drums: Option<bool>) -> Option<&mut leadsheet_core:
 }
 
 fn mutate_hostile_qsong(q: &mut QSong, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 23;
+    // (meter-map cases appended at the tail)
+    const N: u32 = 25;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -770,6 +778,28 @@ fn mutate_hostile_qsong(q: &mut QSong, which: u8, spice: u8) -> &'static str {
                 q.n_bars = u32::MAX;
                 true
             }),
+            23 => ("bar_meters length mismatch", {
+                if q.bar_meters.is_empty() && q.n_bars > 0 {
+                    // A one-entry map for an n>1-bar song, or a stray
+                    // entry for a 1-bar song — either way len != n_bars
+                    // ... unless n_bars == 1, where one entry is legal.
+                    q.bar_meters = vec![(3, 4); q.n_bars as usize + 1];
+                    true
+                } else if !q.bar_meters.is_empty() {
+                    q.bar_meters.pop();
+                    q.n_bars == q.bar_meters.len() as u32 + 1
+                } else {
+                    false
+                }
+            }),
+            24 => ("invalid bar meter entry", {
+                if q.n_bars > 0 {
+                    q.bar_meters = vec![(0, 4); q.n_bars as usize];
+                    true
+                } else {
+                    false
+                }
+            }),
             _ => unreachable!(),
         };
         if applied {
@@ -825,6 +855,7 @@ proptest! {
         prop_assert_eq!(&q1.name, &q2.name);
         prop_assert_eq!(q1.bpm, q2.bpm);
         prop_assert_eq!(q1.meter, q2.meter);
+        prop_assert_eq!(&q1.bar_meters, &q2.bar_meters);
         prop_assert_eq!(q1.key, q2.key);
         prop_assert_eq!(q1.swing, q2.swing);
         prop_assert_eq!(q1.n_bars, q2.n_bars, "{}", text);

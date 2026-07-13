@@ -194,6 +194,38 @@ fn parse_melodic_bar(content: &str, cpb: u32) -> Result<MelodicBar, Raw> {
     Ok(MelodicBar { voices })
 }
 
+const METER_TOKEN_HINT: &str = "a meter override sits after the instrument: `P5 drums 3/4`, `b12 lead 3/4 | ... |` (N/D, \
+     D = 4 or 8, numerator 1..=64)";
+
+/// Whether a header-position token is shaped like a meter (`N/D`).
+fn looks_like_meter(tok: &str) -> bool {
+    tok.split_once('/').is_some_and(|(n, d)| {
+        !n.is_empty()
+            && n.bytes().all(|b| b.is_ascii_digit())
+            && d.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+fn parse_meter_token(tok: &str) -> Result<(u32, u32), Raw> {
+    let bad = || raw("bad-meter", format!("bad meter {tok:?}")).hint(METER_TOKEN_HINT).at(tok);
+    let (n, d) = tok.split_once('/').ok_or_else(bad)?;
+    let n: u32 = n.parse().map_err(|_| bad())?;
+    let d: u32 = d.parse().map_err(|_| bad())?;
+    if d != 4 && d != 8 {
+        return Err(raw("bad-meter", format!("unsupported meter {tok:?} (denominator 4 or 8)"))
+            .hint(METER_TOKEN_HINT)
+            .at(tok));
+    }
+    if n == 0 || n > MAX_METER_NUMERATOR {
+        return Err(raw(
+            "bad-meter",
+            format!("meter numerator out of range in {tok:?} (1..={MAX_METER_NUMERATOR})"),
+        )
+        .at(tok));
+    }
+    Ok((n, d))
+}
+
 fn parse_kin(tok: &str) -> Result<usize, Raw> {
     tok.strip_prefix("~P").and_then(|n| n.parse().ok()).ok_or_else(|| {
         raw("bad-variant", format!("expected ~P<n>, got {tok:?}"))
@@ -202,10 +234,10 @@ fn parse_kin(tok: &str) -> Result<usize, Raw> {
     })
 }
 
-/// (prefix-token, instrument, chordal?, base vel, kin base, content).
-type MusicLine<'a> = (&'a str, &'a str, bool, u8, Option<usize>, &'a str);
+/// (prefix-token, instrument, chordal?, base vel, meter, kin base, content).
+type MusicLine<'a> = (&'a str, &'a str, bool, u8, Option<(u32, u32)>, Option<usize>, &'a str);
 
-/// Split a `P1 bass | ... |` / `b3 piano*@mp | ... |` / `P9 piano ~P7 | ... |`
+/// Split a `P1 bass | ... |` / `b3 piano*@mp | ... |` / `P9 piano 3/4 ~P7 | ... |`
 /// line into its [`MusicLine`] parts.
 fn split_music_line(line: &str) -> Result<MusicLine<'_>, Raw> {
     let (prefix, rest) = line.split_once('|').ok_or_else(|| {
@@ -222,17 +254,21 @@ fn split_music_line(line: &str) -> Result<MusicLine<'_>, Raw> {
     let inst = parts
         .next()
         .ok_or_else(|| raw("bad-line", "missing instrument name").hint(MUSIC_LINE_SHAPE))?;
-    let kin = match parts.next() {
-        None => None,
-        Some(tok) => Some(parse_kin(tok)?),
-    };
-    if let Some(junk) = parts.next() {
-        return Err(raw("bad-line", format!("unexpected {junk:?} before `|`"))
-            .hint(MUSIC_LINE_SHAPE)
-            .at(junk));
+    let mut meter = None;
+    let mut kin = None;
+    for tok in parts {
+        if meter.is_none() && kin.is_none() && looks_like_meter(tok) {
+            meter = Some(parse_meter_token(tok)?);
+        } else if kin.is_none() {
+            kin = Some(parse_kin(tok)?);
+        } else {
+            return Err(raw("bad-line", format!("unexpected {tok:?} before `|`"))
+                .hint(MUSIC_LINE_SHAPE)
+                .at(tok));
+        }
     }
     let (inst, chordal, base) = parse_inst_token(inst)?;
-    Ok((head, inst, chordal, base, kin, content))
+    Ok((head, inst, chordal, base, meter, kin, content))
 }
 
 /// A drum lane line: `K |x... x.x.|` (exactly one token before `|`).
@@ -427,6 +463,8 @@ struct DrumBlock {
     line: usize,
     /// Base velocity from the `@dyn` mark.
     base_vel: u8,
+    /// Meter override (`P5 drums 3/4`); the block's lanes parse in it.
+    meter: Option<(u32, u32)>,
     /// Variant base: lanes not listed here are inherited from it.
     variant_base: Option<usize>,
     lanes: Vec<(u8, Vec<LaneItem>)>,
@@ -544,6 +582,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     id,
                     track: block.track,
                     base_vel: block.base_vel,
+                    meter: block.meter,
                     kin: None,
                     body,
                 });
@@ -560,6 +599,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     bar,
                     track: block.track,
                     base_vel: block.base_vel,
+                    meter: block.meter,
                     body,
                 }));
             }
@@ -587,7 +627,8 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     )
                     .hint("each lane appears once per block — merge the hits into one line")));
                 }
-                let items = parse_lane_items(content, cpb).map_err(err)?;
+                let block_cpb = block.meter.map(crate::grid::meter_cells).unwrap_or(cpb);
+                let items = parse_lane_items(content, block_cpb).map_err(err)?;
                 block.lanes.push((pitch, items));
                 continue;
             }
@@ -674,14 +715,23 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         }
 
         if !line.contains('|') {
-            // Drum block opener: `P2 drums`, `b3 drums@p`, or `P8 drums ~P3`.
+            // Drum block opener: `P2 drums`, `b3 drums@p 3/4`, `P8 drums ~P3`.
             let mut parts = line.split_whitespace();
             let (head, inst) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-            let variant_base = match parts.next() {
-                None => None,
-                Some(tok) => Some(parse_kin(tok).map_err(err)?),
-            };
-            if parts.next().is_some() || inst.is_empty() {
+            let mut meter = None;
+            let mut variant_base = None;
+            let mut junk = false;
+            for tok in parts {
+                if meter.is_none() && variant_base.is_none() && looks_like_meter(tok) {
+                    meter = Some(parse_meter_token(tok).map_err(err)?);
+                } else if variant_base.is_none() {
+                    variant_base = Some(parse_kin(tok).map_err(err)?);
+                } else {
+                    junk = true;
+                    break;
+                }
+            }
+            if junk || inst.is_empty() {
                 return Err(err(raw("bad-line", format!("cannot parse {line:?}")).hint(
                     "a drum block opens with `P<n> <kit-instrument>` or `b<n> <kit-instrument>`, \
                      with its lanes on the following lines",
@@ -705,11 +755,14 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     .at(inst)));
             }
             let target = parse_head(head).map_err(err)?;
+            // A redundant `4/4` under a 4/4 header normalizes away.
+            let meter = meter.filter(|m| Some(*m) != header.as_ref().map(|h| h.meter));
             pending = Some(DrumBlock {
                 track: ti,
                 target,
                 line: lineno,
                 base_vel,
+                meter,
                 variant_base,
                 lanes: Vec::new(),
             });
@@ -718,7 +771,11 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
 
         // Pattern definition or direct bar line. `content` may span several
         // bars separated by `|`.
-        let (head, inst, chordal, base_vel, kin, content) = split_music_line(line).map_err(err)?;
+        let (head, inst, chordal, base_vel, meter, kin, content) =
+            split_music_line(line).map_err(err)?;
+        // A redundant override in the header meter normalizes away.
+        let meter = meter.filter(|m| Some(*m) != header.as_ref().map(|h| h.meter));
+        let line_cpb = meter.map(crate::grid::meter_cells).unwrap_or(cpb);
         let ti = *track_index.get(inst).ok_or_else(|| {
             err(raw("unknown-instrument", format!("unknown instrument {inst:?}"))
                 .hint(known_instruments(&instruments))
@@ -740,14 +797,14 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         let body = if chordal {
             let bars = content
                 .split('|')
-                .map(|seg| parse_chord_cols(seg, cpb))
+                .map(|seg| parse_chord_cols(seg, line_cpb))
                 .collect::<Result<Vec<_>, Raw>>()
                 .map_err(err)?;
             PatternBody::Chordal(bars)
         } else {
             let bars = content
                 .split('|')
-                .map(|seg| parse_melodic_bar(seg, cpb))
+                .map(|seg| parse_melodic_bar(seg, line_cpb))
                 .collect::<Result<Vec<_>, Raw>>()
                 .map_err(err)?;
             PatternBody::Melodic(bars)
@@ -760,7 +817,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                         .at(head)));
                 }
                 pattern_index.insert(id, patterns.len());
-                patterns.push(PatternDef { id, track: ti, base_vel, kin, body });
+                patterns.push(PatternDef { id, track: ti, base_vel, meter, kin, body });
             }
             BlockTarget::Direct(bar) => {
                 let cap = bar_cap(header.as_ref());
@@ -772,7 +829,13 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     .hint(TICK_CAP_HINT)
                     .at(head)));
                 }
-                timeline.push(TimelineItem::Direct(DirectItem { bar, track: ti, base_vel, body }));
+                timeline.push(TimelineItem::Direct(DirectItem {
+                    bar,
+                    track: ti,
+                    base_vel,
+                    meter,
+                    body,
+                }));
             }
         }
     }
@@ -798,7 +861,13 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         )
         .map_err(|r| diag(opened, "", r))?;
     }
-    Ok(Document { header, instruments, patterns, timeline })
+    let doc = Document { header, instruments, patterns, timeline };
+    // Meter overrides interact globally (stack agreement, bar claims,
+    // the tick domain under mixed meters) — one authoritative pass,
+    // shared with validate()/resolve(), so a parsed Document keeps the
+    // "resolves without error" promise.
+    crate::doc::check_bar_meters(&doc)?;
+    Ok(doc)
 }
 
 /// Text → compiled `QSong` (the historical entry point):

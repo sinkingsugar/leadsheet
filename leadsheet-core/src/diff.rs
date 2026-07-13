@@ -131,7 +131,11 @@ pub fn diff(a: &Document, b: &Document) -> String {
                 if ta != tb {
                     let _ = writeln!(out, "direct b{}: instrument {ta} -> {tb}", x.bar);
                 }
-                if x.bar != y.bar || x.base_vel != y.base_vel || x.body != y.body {
+                if x.bar != y.bar
+                    || x.base_vel != y.base_vel
+                    || x.meter != y.meter
+                    || x.body != y.body
+                {
                     if x.bar == y.bar {
                         let _ = writeln!(out, "direct b{} changed", x.bar);
                     } else {
@@ -209,6 +213,12 @@ fn diff_pattern(
     if pa.kin != pb.kin {
         let show = |k: Option<usize>| k.map(|k| format!("~P{k}")).unwrap_or_else(|| "-".into());
         let _ = writeln!(out, "P{}: kin {} -> {}", pa.id, show(pa.kin), show(pb.kin));
+    }
+    if pa.meter != pb.meter {
+        let show = |m: Option<(u32, u32)>| {
+            m.map(|(n, d)| format!("{n}/{d}")).unwrap_or_else(|| "-".into())
+        };
+        let _ = writeln!(out, "P{}: meter {} -> {}", pa.id, show(pa.meter), show(pb.meter));
     }
     if pa.base_vel != pb.base_vel {
         let _ = writeln!(

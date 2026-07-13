@@ -64,6 +64,7 @@ fn structured_song() -> QSong {
         name: "structured".into(),
         bpm: 120.0,
         meter: (4, 4),
+        bar_meters: Vec::new(),
         key: None,
         swing: None,
         n_bars: 68,
