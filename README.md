@@ -20,6 +20,11 @@ diagnostics, semantic diff, and a machine-checked roundtrip oracle.
 
 **A lead sheet, not a zip file.**
 
+**[Try it in your browser →](https://sinkingsugar.github.io/leadsheet/)**
+Drop a `.mid`, watch it become text; edit a bar, hear it. The same
+compiler, compiled to wasm — everything runs client-side, with live
+diagnostics in the editor and a GM soundfont at the other end.
+
 ```
 # song: demo  tempo: 96.00  meter: 4/4  key: Am  swing: 56%  grid: 1/16
 # instruments: bass:33 drums:kit piano:0 lead:81
@@ -82,6 +87,9 @@ the claims `leadsheet` can *check*:
   [FORMAT.md](FORMAT.md).
 
 ## Quickstart
+
+No install: the **[playground](https://sinkingsugar.github.io/leadsheet/)**
+does compress, edit, validate, and playback in the browser. With the CLI:
 
 ```sh
 cargo build --release
@@ -202,7 +210,9 @@ crate hands them a trustworthy AST and canonical text.
 ## Status
 
 Working end to end; format may still evolve. Rust workspace:
-`leadsheet-core` (library) + `leadsheet` CLI. `cargo test` runs the full
+`leadsheet-core` (library) + `leadsheet` CLI + `leadsheet-wasm`
+(the bindings behind the [playground](https://sinkingsugar.github.io/leadsheet/),
+static site in `web/`). `cargo test` runs the full
 acceptance suite, including synthetic-band tempo/meter recovery and the
 roundtrip oracle. See [CLAUDE.md](CLAUDE.md) for architecture notes,
 invariants, and the roadmap.
