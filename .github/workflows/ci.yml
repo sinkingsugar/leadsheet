@@ -20,3 +20,5 @@ jobs:
       - run: cargo test
       # Host enablement: the core stays wasm-buildable.
       - run: cargo build -p leadsheet-core --target wasm32-unknown-unknown
+      # The playground bindings ride the same target.
+      - run: cargo build -p leadsheet-wasm --target wasm32-unknown-unknown

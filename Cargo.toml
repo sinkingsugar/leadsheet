@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["leadsheet-core", "leadsheet-cli"]
+members = ["leadsheet-core", "leadsheet-cli", "leadsheet-wasm"]
 
 [workspace.package]
 version = "0.1.0"
