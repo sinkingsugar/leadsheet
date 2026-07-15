@@ -225,7 +225,10 @@ tracks. Targets:
 - `cc0`…`cc127` — a MIDI control change (wire 0–127)
 - `bend` — pitch bend, signed 14-bit −8192…8191 (0 = center)
 - `at` — channel aftertouch (wire 0–127)
-- `nrpn0`…`nrpn16383` — an NRPN parameter (wire 0–16383)
+- `poly<note>` — polyphonic aftertouch on a MIDI note, e.g. `poly60` (wire 0–127)
+- `nrpn0`…`nrpn16383` / `rpn0`…`rpn16383` — a (non-)registered parameter (wire 0–16383)
+- `prog` — program (patch) change 0–127; *discrete*, so it emits at the
+  keyframes only (the ease is ignored)
 - `vst3:<path>` / `clap:<path>` / `osc:<path>` / `host:<path>` — an
   opaque, beyond-MIDI destination carried as intent. It has no Standard
   MIDI File form, so `render` **skips** it (an agent may rewrite the lane

@@ -116,6 +116,17 @@ fn push_automation(
                 }
             }
         }
+        Target::PolyPressure(note) => {
+            let key = u7::new(*note);
+            let mut last: Option<u8> = None;
+            for (tick, v) in pts {
+                let w = to_wire(v, domain, 0.0, 127.0) as u8;
+                if last != Some(w) {
+                    last = Some(w);
+                    events.push((tick, 0, MidiMessage::Aftertouch { key, vel: u7::new(w) }));
+                }
+            }
+        }
         Target::PitchBend => {
             let mut last: Option<i16> = None;
             for (tick, v) in pts {
@@ -126,9 +137,11 @@ fn push_automation(
                 }
             }
         }
-        Target::Nrpn(param) => {
-            // Select the parameter once (CC99/98), then stream 14-bit data
-            // (CC6 MSB / CC38 LSB) as the value moves.
+        Target::Nrpn(param) | Target::Rpn(param) => {
+            // Select the parameter once — NRPN with CC99/98, RPN with
+            // CC101/100 — then stream 14-bit data (CC6 MSB / CC38 LSB).
+            let (sel_hi, sel_lo) =
+                if matches!(target, Target::Rpn(_)) { (101u8, 100u8) } else { (99u8, 98u8) };
             let (pmsb, plsb) = ((param >> 7) as u8, (param & 0x7f) as u8);
             let mut last: Option<u16> = None;
             let mut selected = false;
@@ -139,12 +152,25 @@ fn push_automation(
                 }
                 last = Some(w);
                 if !selected {
-                    events.push((tick, 0, cc(99, pmsb)));
-                    events.push((tick, 0, cc(98, plsb)));
+                    events.push((tick, 0, cc(sel_hi, pmsb)));
+                    events.push((tick, 0, cc(sel_lo, plsb)));
                     selected = true;
                 }
                 events.push((tick, 0, cc(6, (w >> 7) as u8)));
                 events.push((tick, 0, cc(38, (w & 0x7f) as u8)));
+            }
+        }
+        Target::Program => {
+            // Program change is discrete: emit at the keyframes only (no
+            // interpolation), the value mapped and rounded to a GM program.
+            let mut last: Option<u8> = None;
+            for (at, val, _) in keys {
+                let w = to_wire(*val, domain, 0.0, 127.0) as u8;
+                if last != Some(w) {
+                    last = Some(w);
+                    let tick = at.ticks().max(0) as u32;
+                    events.push((tick, 0, MidiMessage::ProgramChange { program: u7::new(w) }));
+                }
             }
         }
         Target::Extern { .. } => {}

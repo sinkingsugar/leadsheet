@@ -621,8 +621,11 @@ fn validate_meter(m: (u32, u32), who: &str) -> Result<(), Error> {
 fn validate_target(t: &Target) -> Result<(), Error> {
     match t {
         Target::Cc(n) if *n > 127 => Err(doc_err(format!("controller number {n} beyond CC 127"))),
-        Target::Nrpn(p) if *p > 16383 => {
-            Err(doc_err(format!("NRPN parameter {p} beyond 14-bit 16383")))
+        Target::PolyPressure(n) if *n > 127 => {
+            Err(doc_err(format!("poly-aftertouch note {n} beyond MIDI 127")))
+        }
+        Target::Nrpn(p) | Target::Rpn(p) if *p > 16383 => {
+            Err(doc_err(format!("parameter {p} beyond 14-bit 16383")))
         }
         Target::Extern { path, .. } if !valid_extern_path(path) => Err(doc_err(format!(
             "extern target path {path:?} must be non-empty graphic ASCII (no spaces)"

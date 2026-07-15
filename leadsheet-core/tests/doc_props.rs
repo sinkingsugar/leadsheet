@@ -348,11 +348,14 @@ impl Bytes {
 
 /// A varied target for an instrument-scoped bind (exercises every kind).
 fn auto_target(i: u8) -> Target {
-    match i % 4 {
+    match i % 7 {
         0 => Target::ChannelPressure,
         1 => Target::Nrpn(1000 + i as u16),
         2 => Target::Extern { kind: ExternKind::Osc, path: format!("/p{i}") },
-        _ => Target::Cc(20 + i),
+        3 => Target::Cc(20 + i),
+        4 => Target::Rpn(i as u16),
+        5 => Target::Program,
+        _ => Target::PolyPressure(i.min(127)),
     }
 }
 

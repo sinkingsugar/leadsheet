@@ -506,8 +506,8 @@ fn parse_head(head: &str) -> Result<BlockTarget, Raw> {
 
 const BIND_HINT: &str = "a bind maps a name to a target: `#bind cutoff = cc74` (song-level) or \
                          `#bind lead.cutoff = cc74` (instrument-scoped), with an optional \
-                         `[min..max]` value domain. targets: cc0..=cc127, bend, at, \
-                         nrpn0..=nrpn16383, or opaque vst3:/clap:/osc:/host:<path>";
+                         `[min..max]` value domain. targets: cc0..=cc127, bend, at, poly<note>, \
+                         nrpn<n>, rpn<n>, prog, or opaque vst3:/clap:/osc:/host:<path>";
 
 /// `#bind name = target [min..max]` or `#bind inst.name = target` (the
 /// `bind` keyword already stripped). A dotted left side scopes the bind to
@@ -583,13 +583,29 @@ fn parse_target(t: &str) -> Result<Target, Raw> {
     if t == "at" {
         return Ok(Target::ChannelPressure);
     }
-    if let Some(p) = t.strip_prefix("nrpn") {
-        let p = p.parse::<u16>().ok().filter(|p| *p <= 16383).ok_or_else(|| {
-            raw("bad-bind", format!("bad NRPN parameter in {t:?} (nrpn0..=nrpn16383)"))
+    if t == "prog" {
+        return Ok(Target::Program);
+    }
+    if let Some(n) = t.strip_prefix("poly") {
+        let n = n.parse::<u8>().ok().filter(|n| *n <= 127).ok_or_else(|| {
+            raw("bad-bind", format!("bad poly-aftertouch note in {t:?} (poly0..=poly127)"))
                 .hint(BIND_HINT)
                 .at(t)
         })?;
-        return Ok(Target::Nrpn(p));
+        return Ok(Target::PolyPressure(n));
+    }
+    // NRPN / RPN share a 14-bit parameter; the `n` prefix disambiguates.
+    for (tag, mk) in
+        [("nrpn", Target::Nrpn as fn(u16) -> Target), ("rpn", Target::Rpn as fn(u16) -> Target)]
+    {
+        if let Some(p) = t.strip_prefix(tag) {
+            let p = p.parse::<u16>().ok().filter(|p| *p <= 16383).ok_or_else(|| {
+                raw("bad-bind", format!("bad {tag} parameter in {t:?} ({tag}0..={tag}16383)"))
+                    .hint(BIND_HINT)
+                    .at(t)
+            })?;
+            return Ok(mk(p));
+        }
     }
     for kind in [ExternKind::Vst3, ExternKind::Clap, ExternKind::Osc, ExternKind::Host] {
         if let Some(path) = t.strip_prefix(kind.tag()).and_then(|r| r.strip_prefix(':')) {

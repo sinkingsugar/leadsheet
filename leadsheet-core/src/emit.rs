@@ -953,7 +953,10 @@ fn target_text(t: &Target) -> String {
         Target::Cc(n) => format!("cc{n}"),
         Target::PitchBend => "bend".to_string(),
         Target::ChannelPressure => "at".to_string(),
+        Target::PolyPressure(n) => format!("poly{n}"),
         Target::Nrpn(p) => format!("nrpn{p}"),
+        Target::Rpn(p) => format!("rpn{p}"),
+        Target::Program => "prog".to_string(),
         Target::Extern { kind, path } => format!("{}:{}", kind.tag(), path),
     }
 }

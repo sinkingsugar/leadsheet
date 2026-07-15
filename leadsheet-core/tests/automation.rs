@@ -272,7 +272,21 @@ fn extern_target_round_trips_but_renders_nothing() {
 
 #[test]
 fn all_target_spellings_round_trip() {
-    for t in ["cc74", "bend", "at", "nrpn0", "nrpn16383", "clap:mix", "osc:/fx/1", "host:tempo"] {
+    for t in [
+        "cc74",
+        "bend",
+        "at",
+        "poly0",
+        "poly127",
+        "nrpn0",
+        "nrpn16383",
+        "rpn0",
+        "rpn16383",
+        "prog",
+        "clap:mix",
+        "osc:/fx/1",
+        "host:tempo",
+    ] {
         let src = one_lane(t, "0:0 8:1");
         let doc = parse_document(&src).unwrap_or_else(|e| panic!("{t}: {e}"));
         let text = emit_document(&doc);
@@ -280,9 +294,60 @@ fn all_target_spellings_round_trip() {
         assert_eq!(text, emit_document(&parse_document(&text).unwrap()), "{t} fixpoint");
     }
     // Out-of-range and malformed targets are rejected.
-    for t in ["cc128", "nrpn16384", "vst3:", "vst3:has space", "wiggle"] {
+    for t in ["cc128", "poly128", "nrpn16384", "rpn16384", "vst3:", "vst3:has space", "wiggle"] {
         assert!(parse_document(&one_lane(t, "0:0 8:1")).is_err(), "{t} must be rejected");
     }
+}
+
+#[test]
+fn rpn_selects_with_101_100() {
+    let midi = render(&parse(&one_lane("rpn5", "0:0 8:16383")).unwrap());
+    // RPN 5 = MSB 0, LSB 5, selected on CC101/CC100; data sweeps on CC6/38.
+    assert!(controllers(&midi, 101).iter().any(|(_, v)| *v == 0), "RPN param MSB (CC101=0)");
+    assert!(controllers(&midi, 100).iter().any(|(_, v)| *v == 5), "RPN param LSB (CC100=5)");
+    assert!(controllers(&midi, 6).iter().any(|(_, v)| *v == 127), "data MSB reaches 127");
+}
+
+#[test]
+fn poly_aftertouch_targets_a_note() {
+    let midi = render(&parse(&one_lane("poly60", "0:0 8:127")).unwrap());
+    let smf = Smf::parse(&midi).unwrap();
+    let mut ats: Vec<(u8, u8)> = Vec::new();
+    for track in &smf.tracks {
+        for ev in track {
+            if let TrackEventKind::Midi { message: MidiMessage::Aftertouch { key, vel }, .. } =
+                ev.kind
+            {
+                ats.push((key.as_int(), vel.as_int()));
+            }
+        }
+    }
+    assert!(!ats.is_empty(), "no poly-aftertouch events");
+    assert!(ats.iter().all(|(k, _)| *k == 60), "all on note 60: {ats:?}");
+    assert_eq!(ats.first().map(|(_, v)| *v), Some(0));
+    assert_eq!(ats.last().map(|(_, v)| *v), Some(127));
+}
+
+#[test]
+fn program_change_is_discrete() {
+    // Three keyframes -> three program changes at those ticks, no ramp.
+    let midi = render(&parse(&one_lane("prog", "0:0 8:64 16:127")).unwrap());
+    let smf = Smf::parse(&midi).unwrap();
+    let mut progs: Vec<u8> = Vec::new();
+    for track in &smf.tracks {
+        for ev in track {
+            if let TrackEventKind::Midi {
+                message: MidiMessage::ProgramChange { program }, ..
+            } = ev.kind
+            {
+                progs.push(program.as_int());
+            }
+        }
+    }
+    // The track's own program (81) plus the three keyframe values — and
+    // crucially nothing in between (discrete, not interpolated).
+    assert!(progs.contains(&0) && progs.contains(&64) && progs.contains(&127), "{progs:?}");
+    assert!(progs.len() <= 4, "program change must not interpolate, got {progs:?}");
 }
 
 // ---------------------------------------------------------------------------

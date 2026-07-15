@@ -260,13 +260,19 @@ impl ExternKind {
 /// - `Cc(n)`: controller `n` (0..=127), wire 0..=127
 /// - `PitchBend`: signed 14-bit bend, wire −8192..=8191 (0 = center)
 /// - `ChannelPressure`: channel aftertouch, wire 0..=127
-/// - `Nrpn(param)`: NRPN parameter `param` (0..=16383), wire 0..=16383
+/// - `PolyPressure(note)`: polyphonic aftertouch on `note` (0..=127), wire 0..=127
+/// - `Nrpn(param)` / `Rpn(param)`: (non-)registered parameter (0..=16383), wire 0..=16383
+/// - `Program`: program change 0..=127 — *discrete*, so it emits at the
+///   keyframes only (no interpolation; ease is ignored)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Cc(u8),
     PitchBend,
     ChannelPressure,
+    PolyPressure(u8),
     Nrpn(u16),
+    Rpn(u16),
+    Program,
     Extern { kind: ExternKind, path: String },
 }
 
@@ -281,9 +287,11 @@ impl Target {
     /// render, or `None` for the render-skipped `Extern` intents.
     pub fn wire_range(&self) -> Option<(f64, f64)> {
         match self {
-            Target::Cc(_) | Target::ChannelPressure => Some((0.0, 127.0)),
+            Target::Cc(_) | Target::ChannelPressure | Target::PolyPressure(_) | Target::Program => {
+                Some((0.0, 127.0))
+            }
             Target::PitchBend => Some((-8192.0, 8191.0)),
-            Target::Nrpn(_) => Some((0.0, 16383.0)),
+            Target::Nrpn(_) | Target::Rpn(_) => Some((0.0, 16383.0)),
             Target::Extern { .. } => None,
         }
     }
