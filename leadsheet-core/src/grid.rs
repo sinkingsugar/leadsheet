@@ -254,12 +254,13 @@ impl ExternKind {
 /// Where a bound automation name sends. MIDI targets ([`Target::Cc`],
 /// pitch bend, channel aftertouch, NRPN) render to wire events on the
 /// track's channel; [`Target::Extern`] is beyond-MIDI intent that render
-/// skips. Values are decimals in the target's own units (a `[min..max]`
-/// domain remap on the bind is a later addition):
-/// - `Cc(n)`: controller `n` (0..=127), value 0..=127
-/// - `PitchBend`: signed 14-bit bend −8192..=8191 (0 = center)
-/// - `ChannelPressure`: channel aftertouch, value 0..=127
-/// - `Nrpn(param)`: NRPN parameter `param` (0..=16383), value 0..=16383
+/// skips. Without a bind [`domain`](crate::doc::Bind), values are decimals
+/// in the target's own wire units ([`Target::wire_range`]); a `[min..max]`
+/// domain instead maps the authored range onto that wire range at render:
+/// - `Cc(n)`: controller `n` (0..=127), wire 0..=127
+/// - `PitchBend`: signed 14-bit bend, wire −8192..=8191 (0 = center)
+/// - `ChannelPressure`: channel aftertouch, wire 0..=127
+/// - `Nrpn(param)`: NRPN parameter `param` (0..=16383), wire 0..=16383
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
     Cc(u8),
@@ -274,6 +275,27 @@ impl Target {
     /// opaque `Extern` intents, which render skips).
     pub fn is_midi(&self) -> bool {
         !matches!(self, Target::Extern { .. })
+    }
+
+    /// The `(lo, hi)` wire range values map into (rounded, clamped) at
+    /// render, or `None` for the render-skipped `Extern` intents.
+    pub fn wire_range(&self) -> Option<(f64, f64)> {
+        match self {
+            Target::Cc(_) | Target::ChannelPressure => Some((0.0, 127.0)),
+            Target::PitchBend => Some((-8192.0, 8191.0)),
+            Target::Nrpn(_) => Some((0.0, 16383.0)),
+            Target::Extern { .. } => None,
+        }
+    }
+}
+
+/// Whether a bind's `[min..max]` value domain is well-formed: both bounds
+/// decimal-canonical and `min < max` (a non-degenerate, non-inverted
+/// range). `None` (no domain — values are wire units) is trivially valid.
+pub fn domain_is_canonical(domain: Option<(f64, f64)>) -> bool {
+    match domain {
+        None => true,
+        Some((lo, hi)) => value_is_canonical(lo) && value_is_canonical(hi) && lo < hi,
     }
 }
 
@@ -290,49 +312,111 @@ pub const EXP_TENSION_MAX: f64 = 16.0;
 /// - `Exp(k)` — exponential tension, `k` a nonzero decimal in
 ///   `[-16, 16]`: `k > 0` starts slow then accelerates, `k < 0` the
 ///   reverse, `|k|` sets the curvature. `k == 0` is [`Ease::Lin`].
-///
-/// Bezier segments are the intended next addition (control points, an
-/// x→t solve at render); deliberately not yet spelled.
+/// - `Bez(x1, y1, x2, y2)` — a cubic Bézier ease (CSS `cubic-bezier`):
+///   control points `(x1,y1)`, `(x2,y2)` between the fixed `(0,0)` and
+///   `(1,1)`. `x1`/`x2` in `[0, 1]` keep it single-valued in time; `y`
+///   may overshoot. The fully general curve.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Ease {
     Lin,
     Hold,
     Smooth,
     Exp(f64),
+    Bez(f64, f64, f64, f64),
 }
 
 impl Ease {
     /// The eased fraction in [0, 1] for a raw fraction `t` in [0, 1].
     /// `Hold` never interpolates (render steps it), so it passes `t`
     /// through; the continuous eases warp it. Monotonic with warp(0)=0,
-    /// warp(1)=1 for the bounded `Exp` tension.
+    /// warp(1)=1 for the bounded `Exp` tension and any valid `Bez`.
     pub fn warp(self, t: f64) -> f64 {
         match self {
             Ease::Lin | Ease::Hold => t,
             Ease::Smooth => t * t * (3.0 - 2.0 * t),
             Ease::Exp(k) => ((k * t).exp() - 1.0) / (k.exp() - 1.0),
+            Ease::Bez(x1, y1, x2, y2) => bezier_warp(x1, y1, x2, y2, t),
         }
     }
 
-    /// Whether this ease carries decimal-canonical, in-range parameters
-    /// (only `Exp` does). A malformed `Exp(k)` must be rejected by both
-    /// validation boundaries before it reaches the renderer.
+    /// Whether this ease carries decimal-canonical, in-range parameters.
+    /// `Exp(k)` needs a nonzero, bounded, on-grid tension; `Bez` needs four
+    /// on-grid params with `x1`/`x2` in `[0, 1]`. A malformed ease must be
+    /// rejected by both validation boundaries before it reaches the renderer.
     pub fn is_canonical(self) -> bool {
         match self {
             Ease::Exp(k) => value_is_canonical(k) && k != 0.0 && k.abs() <= EXP_TENSION_MAX,
+            Ease::Bez(x1, y1, x2, y2) => {
+                [x1, y1, x2, y2].iter().all(|v| value_is_canonical(*v))
+                    && (0.0..=1.0).contains(&x1)
+                    && (0.0..=1.0).contains(&x2)
+            }
             _ => true,
         }
     }
 }
 
-/// A resolved automation lane on a track: a concrete [`Target`] plus
-/// absolute-tick keyframes `(position, value, ease-to-next)`. `resolve`
-/// expands each pattern-local `@name` lane through the arrangement and
-/// binds the name to its target. Values are decimals in the target's
-/// units (see [`value_text`]); positions are exact ticks, like notes.
+/// A cubic Bézier ease: `y` at time-fraction `t`. Control points `(x1,y1)`,
+/// `(x2,y2)` between `(0,0)` and `(1,1)`. Because the curve is
+/// parameterized by `s`, not `t`, solve `x(s) = t` (Newton, bisection
+/// fallback — cheap and robust since `x1`,`x2 ∈ [0,1]` make `x(s)`
+/// monotonic) then return `y(s)`. Endpoints are exact: `warp(0)=0`,
+/// `warp(1)=1`.
+fn bezier_warp(x1: f64, y1: f64, x2: f64, y2: f64, t: f64) -> f64 {
+    if t <= 0.0 {
+        return 0.0;
+    }
+    if t >= 1.0 {
+        return 1.0;
+    }
+    // Polynomial coefficients of the cubic through (0,0),(x1,y1),(x2,y2),(1,1).
+    let (cx, cy) = (3.0 * x1, 3.0 * y1);
+    let (bx, by) = (3.0 * (x2 - x1) - cx, 3.0 * (y2 - y1) - cy);
+    let (ax, ay) = (1.0 - cx - bx, 1.0 - cy - by);
+    let sample_x = |s: f64| ((ax * s + bx) * s + cx) * s;
+    let sample_y = |s: f64| ((ay * s + by) * s + cy) * s;
+    let dxds = |s: f64| (3.0 * ax * s + 2.0 * bx) * s + cx;
+    // Newton-Raphson from t, then bisection if a derivative stalls.
+    let mut s = t;
+    for _ in 0..8 {
+        let err = sample_x(s) - t;
+        if err.abs() < 1e-7 {
+            return sample_y(s);
+        }
+        let d = dxds(s);
+        if d.abs() < 1e-7 {
+            break;
+        }
+        s -= err / d;
+    }
+    let (mut lo, mut hi) = (0.0f64, 1.0f64);
+    let mut s = t.clamp(0.0, 1.0);
+    for _ in 0..24 {
+        let x = sample_x(s);
+        if (x - t).abs() < 1e-7 {
+            break;
+        }
+        if x < t {
+            lo = s;
+        } else {
+            hi = s;
+        }
+        s = 0.5 * (lo + hi);
+    }
+    sample_y(s)
+}
+
+/// A resolved automation lane on a track: a concrete [`Target`], the bind's
+/// optional `[min..max]` value `domain`, and absolute-tick keyframes
+/// `(position, value, ease-to-next)`. `resolve` expands each pattern-local
+/// `@name` lane through the arrangement and binds the name to its target.
+/// Values are decimals ([`value_text`]) in the domain's units (or the
+/// target's wire units when there is no domain); positions are exact ticks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QAuto {
     pub target: Target,
+    /// The bind's `[min..max]` value domain; `None` = values are wire units.
+    pub domain: Option<(f64, f64)>,
     pub keys: Vec<(MusicalTime, f64, Ease)>,
 }
 
@@ -628,7 +712,15 @@ mod value_tests {
 
     #[test]
     fn ease_warp_is_monotonic_and_pinned() {
-        for ease in [Ease::Lin, Ease::Smooth, Ease::Exp(3.0), Ease::Exp(-8.0), Ease::Exp(16.0)] {
+        for ease in [
+            Ease::Lin,
+            Ease::Smooth,
+            Ease::Exp(3.0),
+            Ease::Exp(-8.0),
+            Ease::Exp(16.0),
+            Ease::Bez(0.42, 0.0, 0.58, 1.0), // ease-in-out
+            Ease::Bez(0.25, 0.1, 0.25, 1.0), // CSS "ease"
+        ] {
             assert!((ease.warp(0.0) - 0.0).abs() < 1e-9, "{ease:?} warp(0)");
             assert!((ease.warp(1.0) - 1.0).abs() < 1e-9, "{ease:?} warp(1)");
             let mut prev = f64::NEG_INFINITY;
@@ -639,10 +731,15 @@ mod value_tests {
                 prev = v;
             }
         }
+        // A bezier whose x-solve is exercised: the CSS ease-in-out is
+        // symmetric, so its midpoint value sits at 0.5.
+        assert!((Ease::Bez(0.42, 0.0, 0.58, 1.0).warp(0.5) - 0.5).abs() < 1e-6);
+        // An ease-in (slow start) sits below the diagonal early.
+        assert!(Ease::Bez(0.42, 0.0, 1.0, 1.0).warp(0.25) < 0.25);
     }
 
     #[test]
-    fn exp_ease_canonicality() {
+    fn ease_canonicality() {
         assert!(Ease::Exp(2.0).is_canonical());
         assert!(Ease::Exp(-1.5).is_canonical());
         assert!(!Ease::Exp(0.0).is_canonical(), "zero tension is Lin");
@@ -651,5 +748,20 @@ mod value_tests {
         assert!(
             Ease::Lin.is_canonical() && Ease::Hold.is_canonical() && Ease::Smooth.is_canonical()
         );
+        // Bezier: on-grid params, x controls in [0,1]; y may overshoot.
+        assert!(Ease::Bez(0.42, 0.0, 0.58, 1.0).is_canonical());
+        assert!(Ease::Bez(0.3, -0.5, 0.7, 1.5).is_canonical(), "y overshoot allowed");
+        assert!(!Ease::Bez(1.5, 0.0, 0.58, 1.0).is_canonical(), "x1 out of [0,1]");
+        assert!(!Ease::Bez(0.42, 0.0, 0.58, 1.00001).is_canonical(), "y2 off the decimal grid");
+    }
+
+    #[test]
+    fn domain_canonicality() {
+        assert!(domain_is_canonical(None));
+        assert!(domain_is_canonical(Some((0.0, 1.0))));
+        assert!(domain_is_canonical(Some((-2.0, 2.0))));
+        assert!(!domain_is_canonical(Some((1.0, 0.0))), "inverted");
+        assert!(!domain_is_canonical(Some((0.0, 0.0))), "degenerate");
+        assert!(!domain_is_canonical(Some((0.0, 1.00001))), "off the decimal grid");
     }
 }

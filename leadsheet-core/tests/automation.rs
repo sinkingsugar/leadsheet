@@ -128,8 +128,10 @@ fn active_at(series: &[(u32, u8)], tick: u32) -> Option<u8> {
 // Easings: smooth + exp:k parse, emit canonically, and actually bend.
 
 #[test]
-fn smooth_and_exp_round_trip() {
-    for ease in ["smooth", "exp:3", "exp:-1.5", "exp:16"] {
+fn continuous_eases_round_trip() {
+    for ease in
+        ["smooth", "exp:3", "exp:-1.5", "exp:16", "bez:0.42,0,0.58,1", "bez:0.25,0.1,0.25,1"]
+    {
         let src = SRC.replace("8:100", &format!("8:100 {ease}"));
         let doc = parse_document(&src).unwrap_or_else(|e| panic!("{ease}: {e}"));
         let text = emit_document(&doc);
@@ -140,11 +142,33 @@ fn smooth_and_exp_round_trip() {
 }
 
 #[test]
-fn malformed_exp_is_rejected() {
-    for bad in ["exp:0", "exp:0.12345", "exp:20", "exp:x", "exp:"] {
+fn malformed_ease_is_rejected() {
+    for bad in [
+        "exp:0",
+        "exp:0.12345",
+        "exp:20",
+        "exp:x",
+        "exp:",
+        "bez:2,0,0.5,1",       // x1 outside [0,1]
+        "bez:0,0,0.5,1.00001", // y2 off the decimal grid
+        "bez:0,0,1",           // too few params
+        "bez:a,0,0.5,1",       // non-numeric
+    ] {
         let src = SRC.replace("8:100", &format!("8:100 {bad}"));
         assert!(parse_document(&src).is_err(), "{bad} must be rejected");
     }
+}
+
+#[test]
+fn bezier_renders_and_round_trips() {
+    // An ease-in bezier (slow start) is concave: below linear at the quarter.
+    let src = SRC.replace("@cutoff { 0:0 8:100 16:40 }", "@cutoff { 0:0 bez:0.7,0,1,1 16:120 }");
+    let doc = parse_document(&src).unwrap();
+    assert_eq!(emit_document(&doc), emit_document(&parse_document(&emit_document(&doc)).unwrap()));
+    let cc74 = controllers(&render(&parse(&src).unwrap()), 74);
+    assert_eq!(active_at(&cc74, 0), Some(0));
+    let q = active_at(&cc74, 960).expect("a value at the quarter");
+    assert!(q < 20, "ease-in bezier should lag (got {q} at the quarter of a 0->120 ramp)");
 }
 
 #[test]
@@ -341,4 +365,48 @@ arrangement:
 ";
     let err = parse(src).unwrap_err();
     assert!(format!("{err:?}").contains("bound"), "expected an unbound error, got {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Value-domain remap: [min..max] maps the authored range onto wire units.
+
+#[test]
+fn domain_remaps_onto_the_cc_range() {
+    // Author in 0..1; the domain scales it onto CC 0..127.
+    let src = one_lane("cc74 [0..1]", "0:0 8:1");
+    let doc = parse_document(&src).unwrap();
+    let text = emit_document(&doc);
+    assert!(text.contains("#bind p = cc74 [0..1]"), "domain not emitted:\n{text}");
+    assert_eq!(text, emit_document(&parse_document(&text).unwrap()), "domain fixpoint");
+    let cc74 = controllers(&render(&parse(&src).unwrap()), 74);
+    assert_eq!(cc74.first().map(|(_, v)| *v), Some(0), "0.0 -> wire 0");
+    assert_eq!(cc74.last().map(|(_, v)| *v), Some(127), "1.0 -> wire 127");
+    assert!(cc74.iter().any(|(_, v)| (60..=68).contains(v)), "0.5 -> ~64");
+}
+
+#[test]
+fn domain_remaps_a_signed_bend() {
+    // Author in semitone-ish -2..2; the domain scales it across the bend.
+    let midi = render(&parse(&one_lane("bend [-2..2]", "0:-2 8:0 16:2")).unwrap());
+    let smf = Smf::parse(&midi).unwrap();
+    let mut bends: Vec<u16> = Vec::new();
+    for track in &smf.tracks {
+        for ev in track {
+            if let TrackEventKind::Midi { message: MidiMessage::PitchBend { bend }, .. } = ev.kind {
+                bends.push(bend.0.as_int());
+            }
+        }
+    }
+    assert_eq!(bends.first(), Some(&0), "-2 -> wire 0");
+    // The bend wire is asymmetric (−8192..8191), so a symmetric domain's
+    // 0 lands at the linear middle ≈ 8191, not exactly center 8192.
+    assert!(bends.iter().any(|&b| (8190..=8192).contains(&b)), "0 -> ~center: {bends:?}");
+    assert_eq!(bends.last(), Some(&16383), "2 -> wire 16383");
+}
+
+#[test]
+fn malformed_domain_is_rejected() {
+    for bad in ["cc74 [1..0]", "cc74 [0..0]", "cc74 [0..1.00001]", "cc74 [0..]", "cc74 [0]"] {
+        assert!(parse_document(&one_lane(bad, "0:0 8:1")).is_err(), "{bad} must be rejected");
+    }
 }

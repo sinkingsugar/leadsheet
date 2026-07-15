@@ -71,13 +71,26 @@ fn sample_curve(keys: &[(MusicalTime, f64, Ease)]) -> Vec<(u32, f64)> {
     pts
 }
 
-/// Emit a keyframed lane onto its target's wire events, deduping
-/// consecutive identical wire values. MIDI targets produce channel
-/// messages; `Extern` intents have no wire form and are skipped (an LLM
-/// may rewrite them onto a MIDI target if it wants them to sound).
+/// Map a raw lane value to its target's wire units: with a `[lo..hi]`
+/// domain, the authored range maps linearly onto `[wlo..whi]`; without
+/// one, the value is already in wire units. Rounded and clamped to the
+/// wire range.
+fn to_wire(v: f64, domain: Option<(f64, f64)>, wlo: f64, whi: f64) -> f64 {
+    let w = match domain {
+        Some((lo, hi)) => wlo + (v - lo) / (hi - lo) * (whi - wlo),
+        None => v,
+    };
+    w.round().clamp(wlo, whi)
+}
+
+/// Emit a keyframed lane onto its target's wire events, applying the bind's
+/// `[min..max]` domain and deduping consecutive identical wire values. MIDI
+/// targets produce channel messages; `Extern` intents have no wire form and
+/// are skipped (an LLM may rewrite them onto a MIDI target to hear them).
 fn push_automation(
     events: &mut Vec<(u32, u8, MidiMessage)>,
     target: &Target,
+    domain: Option<(f64, f64)>,
     keys: &[(MusicalTime, f64, Ease)],
 ) {
     let cc = |n: u8, v: u8| MidiMessage::Controller { controller: u7::new(n), value: u7::new(v) };
@@ -86,7 +99,7 @@ fn push_automation(
         Target::Cc(n) => {
             let mut last: Option<u8> = None;
             for (tick, v) in pts {
-                let w = v.round().clamp(0.0, 127.0) as u8;
+                let w = to_wire(v, domain, 0.0, 127.0) as u8;
                 if last != Some(w) {
                     last = Some(w);
                     events.push((tick, 0, cc(*n, w)));
@@ -96,7 +109,7 @@ fn push_automation(
         Target::ChannelPressure => {
             let mut last: Option<u8> = None;
             for (tick, v) in pts {
-                let w = v.round().clamp(0.0, 127.0) as u8;
+                let w = to_wire(v, domain, 0.0, 127.0) as u8;
                 if last != Some(w) {
                     last = Some(w);
                     events.push((tick, 0, MidiMessage::ChannelAftertouch { vel: u7::new(w) }));
@@ -106,7 +119,7 @@ fn push_automation(
         Target::PitchBend => {
             let mut last: Option<i16> = None;
             for (tick, v) in pts {
-                let w = v.round().clamp(-8192.0, 8191.0) as i16;
+                let w = to_wire(v, domain, -8192.0, 8191.0) as i16;
                 if last != Some(w) {
                     last = Some(w);
                     events.push((tick, 0, MidiMessage::PitchBend { bend: PitchBend::from_int(w) }));
@@ -120,7 +133,7 @@ fn push_automation(
             let mut last: Option<u16> = None;
             let mut selected = false;
             for (tick, v) in pts {
-                let w = v.round().clamp(0.0, 16383.0) as u16;
+                let w = to_wire(v, domain, 0.0, 16383.0) as u16;
                 if last == Some(w) {
                     continue;
                 }
@@ -262,7 +275,7 @@ pub fn render(q: &QSong) -> Vec<u8> {
         // wire form and are skipped; events sort before the note-ons at the
         // same tick (order 0 < 1).
         for a in &track.autos {
-            push_automation(&mut events, &a.target, &a.keys);
+            push_automation(&mut events, &a.target, a.domain, &a.keys);
         }
         events.sort_by_key(|(tick, order, msg)| {
             let key = match msg {

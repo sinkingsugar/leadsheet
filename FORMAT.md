@@ -208,12 +208,12 @@ and let the renderer interpolate between them. This is the surface that
 replaces a DAW's automation lanes.
 
 ```
-#bind cutoff = cc74
-#bind lead.wobble = bend
+#bind cutoff = cc74 [0..1]
+#bind lead.wobble = bend [-2..2]
 
 P1 lead | c4 e4 g4 c4 |
-  @cutoff { 0:0 8:100 smooth 16:40 }
-  @wobble { 0:0 8:8191 exp:-3 16:0 }
+  @cutoff { 0:0.2 8:1 smooth 16:0.5 }
+  @wobble { 0:0 8:1 bez:0.7,0,1,1 16:0 }
 ```
 
 **Binds** map a name to a destination. Song-level (`#bind cutoff = cc74`)
@@ -222,15 +222,21 @@ applies only on that instrument and shadows a same-named song bind
 (innermost wins), so one name can mean different things on different
 tracks. Targets:
 
-- `cc0`…`cc127` — a MIDI control change (value 0–127)
+- `cc0`…`cc127` — a MIDI control change (wire 0–127)
 - `bend` — pitch bend, signed 14-bit −8192…8191 (0 = center)
-- `at` — channel aftertouch (value 0–127)
-- `nrpn0`…`nrpn16383` — an NRPN parameter (value 0–16383)
+- `at` — channel aftertouch (wire 0–127)
+- `nrpn0`…`nrpn16383` — an NRPN parameter (wire 0–16383)
 - `vst3:<path>` / `clap:<path>` / `osc:<path>` / `host:<path>` — an
   opaque, beyond-MIDI destination carried as intent. It has no Standard
   MIDI File form, so `render` **skips** it (an agent may rewrite the lane
   onto a MIDI target if it wants it to sound); a host that speaks the
   protocol honors it directly.
+
+A bind may carry a `[min..max]` **value domain** (`#bind cutoff = cc74
+[0..1]`): lane values in that range map linearly onto the target's wire
+range at render, so you can author in normalized (`0..1`) or musical
+(`-2..2` semitones) units. Without a domain, values are already in wire
+units. `min < max`, both on the decimal grid.
 
 **Lanes** attach to a pattern or direct bar on the line(s) below it:
 `@name { pos:value ease ... }`, in pattern-local time.
@@ -238,21 +244,21 @@ tracks. Targets:
 - **Position** is a grid cell — a whole 16th (`8`) or a lowest-terms
   fraction of one (`1/2`, `17/2`), exactly like a note duration. Time is
   rational and tick-exact; decimal positions (`8.5`) are rejected.
-- **Value** is a decimal in the target's own units (`100`, `-8192`,
-  `0.25`), snapped to 4 places. Values are analog — decimals, not the
-  integer/rational grid that time lives on.
+- **Value** is a decimal in the domain's units (or the target's wire
+  units with no domain), snapped to 4 places. Values are analog —
+  decimals, not the integer/rational grid that time lives on.
 - **Ease** carries a keyframe to the next one: `lin` (straight, the
-  default and omitted), `hold` (step), `smooth` (an ease-in-out
-  S-curve), or `exp:k` (exponential tension, `k` a nonzero decimal in
-  ±16; `k>0` starts slow and accelerates, `k<0` the reverse). The last
-  keyframe eases nowhere and carries none.
+  default and omitted), `hold` (step), `smooth` (an ease-in-out S-curve),
+  `exp:k` (exponential tension, `k` a nonzero decimal in ±16; `k>0` starts
+  slow and accelerates, `k<0` the reverse), or `bez:x1,y1,x2,y2` (a cubic
+  Bézier, CSS `cubic-bezier`; control points between `(0,0)` and `(1,1)`,
+  `x`-controls in `[0,1]`, `y` may overshoot). The last keyframe eases
+  nowhere and carries none.
 
 Keyframes may sit anywhere in the body (sub-cell included) and must
 strictly increase in position. At render, MIDI targets sample the eased
 curve at 1/64-note resolution onto the track's channel; an NRPN selects
-its parameter once, then streams 14-bit data. Bezier easings and a
-`[min..max]` value-domain remap on the bind are the intended next
-additions.
+its parameter once, then streams 14-bit data.
 
 ## CLI
 

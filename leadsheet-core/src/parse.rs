@@ -505,14 +505,16 @@ fn parse_head(head: &str) -> Result<BlockTarget, Raw> {
 }
 
 const BIND_HINT: &str = "a bind maps a name to a target: `#bind cutoff = cc74` (song-level) or \
-                         `#bind lead.cutoff = cc74` (instrument-scoped). targets: cc0..=cc127, \
-                         bend, at, nrpn0..=nrpn16383, or opaque vst3:/clap:/osc:/host:<path>";
+                         `#bind lead.cutoff = cc74` (instrument-scoped), with an optional \
+                         `[min..max]` value domain. targets: cc0..=cc127, bend, at, \
+                         nrpn0..=nrpn16383, or opaque vst3:/clap:/osc:/host:<path>";
 
-/// `#bind name = target` or `#bind inst.name = target` (the `bind` keyword
-/// already stripped). A dotted left side scopes the bind to that
-/// instrument (innermost wins); a plain name is song-level.
+/// `#bind name = target [min..max]` or `#bind inst.name = target` (the
+/// `bind` keyword already stripped). A dotted left side scopes the bind to
+/// that instrument (innermost wins); a plain name is song-level. The
+/// optional `[min..max]` value domain remaps at render.
 fn parse_bind(spec: &str, track_index: &HashMap<String, usize>) -> Result<Bind, Raw> {
-    let (lhs, target) = spec.split_once('=').ok_or_else(|| {
+    let (lhs, rhs) = spec.split_once('=').ok_or_else(|| {
         raw("bad-bind", format!("bind needs `name = target`: {spec:?}")).hint(BIND_HINT)
     })?;
     let lhs = lhs.trim();
@@ -533,7 +535,32 @@ fn parse_bind(spec: &str, track_index: &HashMap<String, usize>) -> Result<Bind, 
             .hint(BIND_HINT)
             .at(name));
     }
-    Ok(Bind { scope, name: name.to_string(), target: parse_target(target.trim())? })
+    // Split the target from an optional trailing `[min..max]` domain.
+    let rhs = rhs.trim();
+    let (target_str, domain) = match rhs.split_once('[') {
+        None => (rhs, None),
+        Some((tgt, dom)) => (tgt.trim(), Some(parse_domain(dom, rhs)?)),
+    };
+    Ok(Bind { scope, name: name.to_string(), target: parse_target(target_str)?, domain })
+}
+
+/// A `min..max]` value-domain body (the opening `[` already stripped):
+/// two decimal bounds with `min < max`, both on the decimal grid.
+fn parse_domain(dom: &str, whole: &str) -> Result<(f64, f64), Raw> {
+    let bad = || raw("bad-bind", format!("domain must be `[min..max]`: {whole:?}")).hint(BIND_HINT);
+    let dom = dom.trim_end().strip_suffix(']').ok_or_else(bad)?;
+    let (lo, hi) = dom.split_once("..").ok_or_else(bad)?;
+    let parse_bound = |s: &str| s.trim().parse::<f64>().ok().filter(|v: &f64| v.is_finite());
+    let lo = parse_bound(lo).ok_or_else(bad)?;
+    let hi = parse_bound(hi).ok_or_else(bad)?;
+    if !crate::grid::domain_is_canonical(Some((lo, hi))) {
+        return Err(raw(
+            "bad-bind",
+            format!("domain [{lo}..{hi}] needs min < max, both on the decimal grid"),
+        )
+        .hint(BIND_HINT));
+    }
+    Ok((lo, hi))
 }
 
 /// A `#bind` target: a MIDI destination (`cc<n>`, `bend`, `at`,
@@ -582,8 +609,8 @@ fn parse_target(t: &str) -> Result<Target, Raw> {
 
 const AUTO_HINT: &str = "an automation lane is `@name { pos:value [ease] ... }`: positions are \
                          16th cells or lowest-terms fractions (`8`, `1/2`, `17/2`), values are \
-                         decimals, eases are `lin` (default), `hold`, `smooth` or `exp:k`, e.g. \
-                         `@cutoff { 0:0 8:100 smooth 16:40 }`";
+                         decimals, eases are `lin` (default), `hold`, `smooth`, `exp:k` or \
+                         `bez:x1,y1,x2,y2`, e.g. `@cutoff { 0:0 8:100 smooth 16:40 }`";
 
 /// Parse a keyframe position: whole 16th cells or a lowest-terms fraction
 /// of a cell (`8`, `1/2`, `17/2`) — tick-exact, non-negative, no decimals
@@ -623,29 +650,59 @@ fn parse_ease_token(tok: &str) -> Result<Option<Ease>, Raw> {
         "lin" => Ok(Some(Ease::Lin)),
         "hold" => Ok(Some(Ease::Hold)),
         "smooth" => Ok(Some(Ease::Smooth)),
-        _ => match tok.strip_prefix("exp:") {
-            None => Ok(None),
-            Some(k) => {
-                let k = k.parse::<f64>().ok().filter(|v: &f64| v.is_finite()).ok_or_else(|| {
-                    raw("bad-automation", format!("bad exp tension {k:?}")).hint(AUTO_HINT).at(tok)
-                })?;
-                let ease = Ease::Exp(k);
-                if !ease.is_canonical() {
-                    return Err(raw(
-                        "bad-automation",
-                        format!(
-                            "exp tension {k} must be nonzero, at most {} in magnitude, and on the \
-                             {}-decimal grid",
-                            crate::grid::EXP_TENSION_MAX,
-                            crate::grid::VALUE_DECIMALS
-                        ),
-                    )
-                    .hint(AUTO_HINT)
-                    .at(tok));
-                }
-                Ok(Some(ease))
+        _ if tok.starts_with("exp:") => {
+            let k = tok.strip_prefix("exp:").unwrap();
+            let k = k.parse::<f64>().ok().filter(|v: &f64| v.is_finite()).ok_or_else(|| {
+                raw("bad-automation", format!("bad exp tension {k:?}")).hint(AUTO_HINT).at(tok)
+            })?;
+            let ease = Ease::Exp(k);
+            if !ease.is_canonical() {
+                return Err(raw(
+                    "bad-automation",
+                    format!(
+                        "exp tension {k} must be nonzero, at most {} in magnitude, and on the \
+                         {}-decimal grid",
+                        crate::grid::EXP_TENSION_MAX,
+                        crate::grid::VALUE_DECIMALS
+                    ),
+                )
+                .hint(AUTO_HINT)
+                .at(tok));
             }
-        },
+            Ok(Some(ease))
+        }
+        _ if tok.starts_with("bez:") => {
+            let args = tok.strip_prefix("bez:").unwrap();
+            let parts: Vec<&str> = args.split(',').collect();
+            let [x1, y1, x2, y2] = parts.as_slice() else {
+                return Err(raw(
+                    "bad-automation",
+                    format!("bez needs four params: bez:x1,y1,x2,y2, got {tok:?}"),
+                )
+                .hint(AUTO_HINT)
+                .at(tok));
+            };
+            let mut nums = [0.0f64; 4];
+            for (slot, s) in nums.iter_mut().zip([x1, y1, x2, y2]) {
+                *slot = s.parse::<f64>().ok().filter(|v: &f64| v.is_finite()).ok_or_else(|| {
+                    raw("bad-automation", format!("bad bezier param {s:?}")).hint(AUTO_HINT).at(tok)
+                })?;
+            }
+            let ease = Ease::Bez(nums[0], nums[1], nums[2], nums[3]);
+            if !ease.is_canonical() {
+                return Err(raw(
+                    "bad-automation",
+                    format!(
+                        "bezier params must be on the {}-decimal grid with x1,x2 in [0,1]",
+                        crate::grid::VALUE_DECIMALS
+                    ),
+                )
+                .hint(AUTO_HINT)
+                .at(tok));
+            }
+            Ok(Some(ease))
+        }
+        _ => Ok(None),
     }
 }
 

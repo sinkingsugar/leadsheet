@@ -72,12 +72,16 @@ pub enum BindScope {
 
 /// A `#bind name = target` declaration: gives an automation lane's `@name`
 /// a concrete destination. Song-level (`#bind cutoff = cc74`) or
-/// instrument-scoped (`#bind lead.cutoff = cc74`); see [`BindScope`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// instrument-scoped (`#bind lead.cutoff = cc74`); see [`BindScope`]. An
+/// optional `[min..max]` `domain` maps the authored value range onto the
+/// target's wire range at render (`#bind cutoff = cc74 [0..1]`); without
+/// one, values are already in wire units.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Bind {
     pub scope: BindScope,
     pub name: String,
     pub target: Target,
+    pub domain: Option<(f64, f64)>,
 }
 
 impl Bind {
@@ -317,6 +321,12 @@ impl Document {
                 return Err(doc_err(format!("duplicate bind {:?} in the same scope", b.name)));
             }
             validate_target(&b.target)?;
+            if !crate::grid::domain_is_canonical(b.domain) {
+                return Err(doc_err(format!(
+                    "bind {:?}: domain must be [min..max] with min < max on the decimal grid",
+                    b.name
+                )));
+            }
         }
         let mut ids = std::collections::HashSet::new();
         for (idx, p) in self.patterns.iter().enumerate() {
@@ -947,6 +957,9 @@ impl QSong {
             }
             for a in &t.autos {
                 validate_target(&a.target)?;
+                if !crate::grid::domain_is_canonical(a.domain) {
+                    return Err(doc_err(format!("{}: malformed automation domain", t.name)));
+                }
                 if a.keys.is_empty() {
                     return Err(doc_err(format!("{}: empty automation lane", t.name)));
                 }
@@ -1558,11 +1571,14 @@ impl Builder {
         bar_start: MusicalTime,
     ) -> Result<(), Error> {
         for lane in autos {
-            let target = Bind::resolve(binds, &lane.name, track)
-                .map(|b| b.target.clone())
+            let bind = Bind::resolve(binds, &lane.name, track)
                 .ok_or_else(|| doc_err(format!("automation @{} is not bound", lane.name)))?;
             let keys = lane.keys.iter().map(|k| (bar_start + k.at, k.value, k.ease)).collect();
-            self.tracks[track].autos.push(QAuto { target, keys });
+            self.tracks[track].autos.push(QAuto {
+                target: bind.target.clone(),
+                domain: bind.domain,
+                keys,
+            });
         }
         Ok(())
     }

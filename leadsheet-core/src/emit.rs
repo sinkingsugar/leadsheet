@@ -792,7 +792,13 @@ pub fn emit_document(d: &Document) -> String {
         let mut binds: Vec<&Bind> = d.binds.iter().collect();
         binds.sort_by_key(|b| bind_key(b));
         for b in binds {
-            let _ = writeln!(out, "#bind {} = {}", bind_key(b), target_text(&b.target));
+            let _ = writeln!(
+                out,
+                "#bind {} = {}{}",
+                bind_key(b),
+                target_text(&b.target),
+                domain_text(b.domain)
+            );
         }
     }
     out.push('\n');
@@ -952,14 +958,26 @@ fn target_text(t: &Target) -> String {
     }
 }
 
+/// ` [min..max]` when a bind carries a value domain, else empty.
+fn domain_text(domain: Option<(f64, f64)>) -> String {
+    match domain {
+        None => String::new(),
+        Some((lo, hi)) => {
+            format!(" [{}..{}]", crate::grid::value_text(lo), crate::grid::value_text(hi))
+        }
+    }
+}
+
 /// Canonical spelling of an ease-to-next: `None` for the default `Lin`
-/// (omitted), else the keyword. `Exp` carries its decimal tension.
+/// (omitted), else the keyword. `Exp`/`Bez` carry their decimal params.
 fn ease_text(ease: Ease) -> Option<String> {
+    let v = crate::grid::value_text;
     match ease {
         Ease::Lin => None,
         Ease::Hold => Some("hold".to_string()),
         Ease::Smooth => Some("smooth".to_string()),
-        Ease::Exp(k) => Some(format!("exp:{}", crate::grid::value_text(k))),
+        Ease::Exp(k) => Some(format!("exp:{}", v(k))),
+        Ease::Bez(x1, y1, x2, y2) => Some(format!("bez:{},{},{},{}", v(x1), v(y1), v(x2), v(y2))),
     }
 }
 

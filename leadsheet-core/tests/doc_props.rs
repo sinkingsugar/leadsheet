@@ -361,31 +361,40 @@ fn auto_target(i: u8) -> Target {
 /// few instruments. So `a`/`b` resolve on any track; `c` only where scoped.
 fn gen_binds(instruments: &[Instrument]) -> Vec<Bind> {
     let mut binds = vec![
-        Bind { scope: BindScope::Song, name: "a".into(), target: Target::Cc(74) },
-        Bind { scope: BindScope::Song, name: "b".into(), target: Target::PitchBend },
+        // A domained song bind, so the value-remap path is in the fixpoint.
+        Bind {
+            scope: BindScope::Song,
+            name: "a".into(),
+            target: Target::Cc(74),
+            domain: Some((0.0, 1.0)),
+        },
+        Bind { scope: BindScope::Song, name: "b".into(), target: Target::PitchBend, domain: None },
     ];
     for i in 0..instruments.len().min(3) {
         binds.push(Bind {
             scope: BindScope::Instrument(i),
             name: "a".into(),
             target: Target::Cc(10 + i as u8),
+            domain: None,
         });
         binds.push(Bind {
             scope: BindScope::Instrument(i),
             name: "c".into(),
             target: auto_target(i as u8),
+            domain: if i % 2 == 0 { Some((-2.0, 2.0)) } else { None },
         });
     }
     binds
 }
 
 fn gen_ease(b: u8) -> Ease {
-    match b % 5 {
+    match b % 6 {
         0 => Ease::Lin,
         1 => Ease::Hold,
         2 => Ease::Smooth,
         3 => Ease::Exp(2.0),
-        _ => Ease::Exp(-3.5),
+        4 => Ease::Exp(-3.5),
+        _ => Ease::Bez(0.42, 0.0, 0.58, 1.0),
     }
 }
 
@@ -647,7 +656,7 @@ fn first_tuplet_span(d: &mut Document) -> Option<&mut MusicalTime> {
 /// Apply hostile mutation `which`, walking forward past inapplicable
 /// ones (mutation 0 always applies). Returns the mutation's name.
 fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 32;
+    const N: u32 = 34;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -807,6 +816,15 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
             31 => ("duplicate bind in one scope", {
                 d.binds.first().cloned().map(|b| d.binds.push(b)).is_some()
             }),
+            32 => ("inverted bind domain", {
+                d.binds.first_mut().map(|b| b.domain = Some((1.0, 0.0))).is_some()
+            }),
+            33 => ("bezier x-control out of [0,1]", {
+                auto_lanes_mut(d)
+                    .find_map(|l| l.keys.first_mut())
+                    .map(|k| k.ease = Ease::Bez(2.0, 0.0, 0.5, 1.0))
+                    .is_some()
+            }),
             _ => unreachable!(),
         };
         if applied {
@@ -936,7 +954,9 @@ fn mutate_hostile_qsong(q: &mut QSong, which: u8, spice: u8) -> &'static str {
                     true
                 } else if !q.bar_meters.is_empty() {
                     q.bar_meters.pop();
-                    q.n_bars == q.bar_meters.len() as u32 + 1
+                    // Popping a len-1 map to empty is a *valid* uniform song,
+                    // not a mismatch — only claim success if a map remains.
+                    !q.bar_meters.is_empty() && q.n_bars == q.bar_meters.len() as u32 + 1
                 } else {
                     false
                 }
