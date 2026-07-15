@@ -4,6 +4,13 @@ Compact, semantically meaningful music text. Designed to be read *and
 written* by an LLM, and to round-trip losslessly: `leadsheet render`
 turns any valid `.ls` back into MIDI.
 
+`.ls` aims *above* the DAW: it replaces the human editing surface — the
+piano roll, the automation lanes, the drag-and-nudge — with structure an
+agent authors directly in text, and leaves the audio engine downstream
+(render → MIDI → synth). It is not made for humans, and legibility is
+not a design constraint: when a choice is between representing more or
+representing less, it represents more.
+
 ## Example
 
 ```
@@ -191,6 +198,61 @@ parser — purely for reading. Bars run consecutively row by row.
 `b3 lead | ... |` (or `b3 drums` + lanes, `b3 piano* | ... |`) places
 content directly into bar 3, no pattern/arrangement needed. Mixable with
 the pattern form.
+
+## Automation
+
+Continuous parameters — filter cutoff, a pitch bend, a plugin macro — are
+authored as **keyframes**, the way games and animation solve millions of
+events per second: name a destination, then place value points over time
+and let the renderer interpolate between them. This is the surface that
+replaces a DAW's automation lanes.
+
+```
+#bind cutoff = cc74
+#bind lead.wobble = bend
+
+P1 lead | c4 e4 g4 c4 |
+  @cutoff { 0:0 8:100 smooth 16:40 }
+  @wobble { 0:0 8:8191 exp:-3 16:0 }
+```
+
+**Binds** map a name to a destination. Song-level (`#bind cutoff = cc74`)
+applies to any track; instrument-scoped (`#bind lead.cutoff = cc74`)
+applies only on that instrument and shadows a same-named song bind
+(innermost wins), so one name can mean different things on different
+tracks. Targets:
+
+- `cc0`…`cc127` — a MIDI control change (value 0–127)
+- `bend` — pitch bend, signed 14-bit −8192…8191 (0 = center)
+- `at` — channel aftertouch (value 0–127)
+- `nrpn0`…`nrpn16383` — an NRPN parameter (value 0–16383)
+- `vst3:<path>` / `clap:<path>` / `osc:<path>` / `host:<path>` — an
+  opaque, beyond-MIDI destination carried as intent. It has no Standard
+  MIDI File form, so `render` **skips** it (an agent may rewrite the lane
+  onto a MIDI target if it wants it to sound); a host that speaks the
+  protocol honors it directly.
+
+**Lanes** attach to a pattern or direct bar on the line(s) below it:
+`@name { pos:value ease ... }`, in pattern-local time.
+
+- **Position** is a grid cell — a whole 16th (`8`) or a lowest-terms
+  fraction of one (`1/2`, `17/2`), exactly like a note duration. Time is
+  rational and tick-exact; decimal positions (`8.5`) are rejected.
+- **Value** is a decimal in the target's own units (`100`, `-8192`,
+  `0.25`), snapped to 4 places. Values are analog — decimals, not the
+  integer/rational grid that time lives on.
+- **Ease** carries a keyframe to the next one: `lin` (straight, the
+  default and omitted), `hold` (step), `smooth` (an ease-in-out
+  S-curve), or `exp:k` (exponential tension, `k` a nonzero decimal in
+  ±16; `k>0` starts slow and accelerates, `k<0` the reverse). The last
+  keyframe eases nowhere and carries none.
+
+Keyframes may sit anywhere in the body (sub-cell included) and must
+strictly increase in position. At render, MIDI targets sample the eased
+curve at 1/64-note resolution onto the track's channel; an NRPN selects
+its parameter once, then streams 14-bit data. Bezier easings and a
+`[min..max]` value-domain remap on the bind are the intended next
+additions.
 
 ## CLI
 

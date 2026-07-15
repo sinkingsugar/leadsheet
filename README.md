@@ -81,10 +81,14 @@ the claims `leadsheet` can *check*:
   parse/emit and `fmt`.
 - **Byte-locked corpus.** Golden fixtures in `corpus/` pin compressor
   output; regressions fail CI.
-- **Scoped fidelity.** Faithful within the supported quantized note
-  model (960 ticks/beat, tuplets as semantic objects). Tempo maps, CC,
-  pitch bend, and free microtiming are deliberately out of scope — see
-  [FORMAT.md](FORMAT.md).
+- **Scoped fidelity.** The note model is integer-exact by design
+  (960 ticks/beat, tuplets as semantic objects) — a position is a grid
+  you land on, the way a DAW stores ticks or samples, and that exactness
+  is what keeps edits and diffs clean. Continuous parameter data
+  (automation, expression) belongs in the format too, as keyframed values
+  bound to targets rather than raw event streams; that layer, plus
+  microtiming as integer offsets, is roadmap above the DAW — not a
+  permanent exclusion. See [FORMAT.md](FORMAT.md).
 
 ## Quickstart
 
@@ -162,7 +166,7 @@ Humans are welcome to read over your shoulder.
 | JSON note lists | Trivial parsing | Formatting overhead burns the context window; musical relationships stay implicit |
 | ABC notation | Compact scores, strong model priors | Score/typesetting-oriented; implicit onsets make local edits cascade; multitrack and drums are awkward |
 | MusicXML / LilyPond | Rich engraving | Far too verbose for a working context |
-| `.ls` | Agent editing of multitrack arrangements | Deliberately a quantized MIDI-oriented subset — not engraving, not performance capture |
+| `.ls` | Agent editing of multitrack arrangements | A deliberate quantized, MIDI-renderable model; engraving is out of frame, and continuous expression enters as keyframes rather than raw capture |
 
 The central choice: `.ls` encodes *compositional objects* — patterns,
 voicings, lanes, sections, arrangements — not timestamped events. That's
@@ -205,9 +209,13 @@ until then the compiler is proven and the cross-model claim is
 leadsheet is the **compiler and semantic IR** for music-as-text: the
 format, parse/emit, the Document AST, quantization and inference,
 render, metrics, diagnostics, semantic diff, derived analysis views.
-It is deliberately *not* a DAW, a collaboration platform, a plugin
-host, an audio engine, or a music generator — hosts do that; this
-crate hands them a trustworthy AST and canonical text.
+The target is *above* the DAW. A DAW is a human's editing surface —
+piano roll, automation lanes, drag and nudge — built because a person
+had to draw music by hand. `.ls` obsoletes that editing metaphor by
+turning the same structure into text an agent writes directly, and
+keeps the DAW's audio engine downstream (render → MIDI → synth) where
+it belongs. The crate hands hosts a trustworthy AST and canonical text;
+turning that into sound is the engine's job, not the format's.
 
 ## Status
 

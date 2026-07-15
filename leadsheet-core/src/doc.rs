@@ -23,7 +23,7 @@
 use crate::chord::{self, ChordSym};
 use crate::drums::{LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT};
 use crate::error::{Diagnostic, Error};
-use crate::grid::{MusicalTime, QNote, QSong, QTrack, Swing};
+use crate::grid::{Ease, MusicalTime, QAuto, QNote, QSong, QTrack, Swing, Target};
 use crate::key::Key;
 use crate::notation::{self, Mark, Tok};
 use std::collections::HashMap;
@@ -54,6 +54,61 @@ pub struct Instrument {
     pub name: String,
     pub program: u8,
     pub is_drums: bool,
+}
+
+/// The reach of a [`Bind`]: which `@name` lanes it can resolve.
+/// `Instrument` binds shadow `Song` binds of the same name (innermost
+/// wins), so one name can map to different targets on different tracks.
+/// A section scope would need a stable anchor the derived arrangement
+/// labels don't provide, so it is deliberately not modeled yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BindScope {
+    /// Applies to `@name` lanes on any track.
+    Song,
+    /// Applies only to lanes on this instrument (index into
+    /// [`Document::instruments`]); overrides a same-named `Song` bind.
+    Instrument(usize),
+}
+
+/// A `#bind name = target` declaration: gives an automation lane's `@name`
+/// a concrete destination. Song-level (`#bind cutoff = cc74`) or
+/// instrument-scoped (`#bind lead.cutoff = cc74`); see [`BindScope`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bind {
+    pub scope: BindScope,
+    pub name: String,
+    pub target: Target,
+}
+
+impl Bind {
+    /// The bind that resolves `@name` on `track`: an `Instrument(track)`
+    /// bind wins over a `Song` bind of the same name. Returns the target
+    /// and whether the match was instrument-scoped (diagnostics only).
+    pub fn resolve<'a>(binds: &'a [Bind], name: &str, track: usize) -> Option<&'a Bind> {
+        binds
+            .iter()
+            .find(|b| b.name == name && b.scope == BindScope::Instrument(track))
+            .or_else(|| binds.iter().find(|b| b.name == name && b.scope == BindScope::Song))
+    }
+}
+
+/// One keyframe of an automation lane: a decimal `value` (in the bound
+/// target's units) at a pattern-local position `at`, with the easing that
+/// carries it to the next keyframe.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Keyframe {
+    pub at: MusicalTime,
+    pub value: f64,
+    pub ease: Ease,
+}
+
+/// A `@name { pos:value ease ... }` automation lane on a pattern or direct
+/// bar: the named parameter's keyframes, in pattern-local time (16th cells
+/// from the pattern start).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutoLane {
+    pub name: String,
+    pub keys: Vec<Keyframe>,
 }
 
 /// One melodic bar: `&`-separated voices of tokens.
@@ -140,6 +195,8 @@ pub struct PatternDef {
     /// (Drum variants carry their base in [`DrumsBody::variant_base`].)
     pub kin: Option<usize>,
     pub body: PatternBody,
+    /// Automation lanes attached to this pattern (`@name { ... }`).
+    pub autos: Vec<AutoLane>,
 }
 
 /// One arrangement row: a bar-stack repeated `reps` times.
@@ -162,6 +219,8 @@ pub struct DirectItem {
     /// Meter override (`b12 lead 3/4 | ... |`); `None` = the header meter.
     pub meter: Option<(u32, u32)>,
     pub body: PatternBody,
+    /// Automation lanes attached to this direct bar (`@name { ... }`).
+    pub autos: Vec<AutoLane>,
 }
 
 /// Rows and direct bars, in source order — the order is semantic: a tie
@@ -176,6 +235,8 @@ pub enum TimelineItem {
 pub struct Document {
     pub header: Header,
     pub instruments: Vec<Instrument>,
+    /// Song-level automation bindings (`#bind name = target`).
+    pub binds: Vec<Bind>,
     /// In source order.
     pub patterns: Vec<PatternDef>,
     /// Arrangement rows and direct bars, interleaved as written.
@@ -237,6 +298,26 @@ impl Document {
             }
             validate_program(i.program, i.is_drums, true, &format!("instrument {}", i.name))?;
         }
+        let mut bind_keys = std::collections::HashSet::new();
+        for b in &self.binds {
+            if !valid_name(&b.name) {
+                return Err(doc_err(format!("bind name {:?} would break emission", b.name)));
+            }
+            if let BindScope::Instrument(i) = b.scope
+                && i >= self.instruments.len()
+            {
+                return Err(doc_err(format!(
+                    "bind {:?}: instrument index {i} out of range",
+                    b.name
+                )));
+            }
+            // One target per (scope, name): a song and an instrument bind
+            // of the same name legally coexist (innermost wins).
+            if !bind_keys.insert((b.scope, &b.name)) {
+                return Err(doc_err(format!("duplicate bind {:?} in the same scope", b.name)));
+            }
+            validate_target(&b.target)?;
+        }
         let mut ids = std::collections::HashSet::new();
         for (idx, p) in self.patterns.iter().enumerate() {
             if !ids.insert(p.id) {
@@ -278,6 +359,13 @@ impl Document {
                 &self.patterns[..idx],
                 p.track,
                 format!("P{}", p.id),
+            )?;
+            validate_autos(
+                &p.autos,
+                &self.binds,
+                p.track,
+                pcpb * p.body.n_bars(),
+                &format!("P{}", p.id),
             )?;
         }
         let mut total_bars = 0u64;
@@ -343,6 +431,13 @@ impl Document {
                         d.track,
                         format!("b{}", d.bar),
                     )?;
+                    validate_autos(
+                        &d.autos,
+                        &self.binds,
+                        d.track,
+                        dcpb * d.body.n_bars(),
+                        &format!("b{}", d.bar),
+                    )?;
                     total_bars = total_bars.max(d.bar as u64 + d.body.n_bars() as u64 - 1);
                 }
             }
@@ -389,6 +484,7 @@ impl Document {
                     program: i.program,
                     is_drums: i.is_drums,
                     notes: Vec::new(),
+                    autos: Vec::new(),
                 })
                 .collect(),
             open_ties: HashMap::new(),
@@ -441,6 +537,9 @@ impl Document {
                                     bcpb,
                                     blen,
                                 )?;
+                                if bar_in_body == 0 {
+                                    b.place_autos(p.track, &p.autos, &self.binds, bar_start)?;
+                                }
                             }
                         }
                         next_bar += unit;
@@ -464,6 +563,9 @@ impl Document {
                             bcpb,
                             blen,
                         )?;
+                        if offset == 0 {
+                            b.place_autos(item.track, &item.autos, &self.binds, bar_start)?;
+                        }
                     }
                 }
             }
@@ -499,6 +601,82 @@ fn validate_meter(m: (u32, u32), who: &str) -> Result<(), Error> {
     }
     if m.0 == 0 || m.0 > 64 {
         return Err(doc_err(format!("{who}: meter numerator {} out of range (1..=64)", m.0)));
+    }
+    Ok(())
+}
+
+/// Target invariants: a CC's controller and an NRPN parameter are in
+/// range, and an opaque `Extern` carries a non-empty, emission-safe path
+/// (graphic ASCII — no whitespace to break the `#bind` line).
+fn validate_target(t: &Target) -> Result<(), Error> {
+    match t {
+        Target::Cc(n) if *n > 127 => Err(doc_err(format!("controller number {n} beyond CC 127"))),
+        Target::Nrpn(p) if *p > 16383 => {
+            Err(doc_err(format!("NRPN parameter {p} beyond 14-bit 16383")))
+        }
+        Target::Extern { path, .. } if !valid_extern_path(path) => Err(doc_err(format!(
+            "extern target path {path:?} must be non-empty graphic ASCII (no spaces)"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// An opaque target path must survive the `#bind` line verbatim: non-empty
+/// and all graphic ASCII (no whitespace, no control characters).
+pub(crate) fn valid_extern_path(path: &str) -> bool {
+    !path.is_empty() && path.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// Automation lanes on a track: a bound name (resolved with instrument
+/// scope), canonical decimal values, canonical easings, and strictly
+/// increasing keyframes within the pattern's cell span (`total_cells`).
+/// Positions may be sub-cell (any tick in the span), unlike note onsets.
+fn validate_autos(
+    autos: &[AutoLane],
+    binds: &[Bind],
+    track: usize,
+    total_cells: u32,
+    who: &str,
+) -> Result<(), Error> {
+    let span = MusicalTime::from_sixteenths(total_cells);
+    for lane in autos {
+        if Bind::resolve(binds, &lane.name, track).is_none() {
+            return Err(doc_err(format!(
+                "{who}: @{} is not bound (add `#bind {} = ...`)",
+                lane.name, lane.name
+            )));
+        }
+        if lane.keys.is_empty() {
+            return Err(doc_err(format!("{who}: @{} has no keyframes", lane.name)));
+        }
+        let mut prev: Option<MusicalTime> = None;
+        for k in &lane.keys {
+            if !crate::grid::value_is_canonical(k.value) {
+                return Err(doc_err(format!(
+                    "{who}: @{} value {} is finer than the decimal grid",
+                    lane.name, k.value
+                )));
+            }
+            if !k.ease.is_canonical() {
+                return Err(doc_err(format!("{who}: @{} carries a malformed easing", lane.name)));
+            }
+            if k.at < MusicalTime::ZERO || k.at > span {
+                return Err(doc_err(format!(
+                    "{who}: @{} keyframe at {} is past the {total_cells}-cell pattern",
+                    crate::grid::pos_text(k.at),
+                    lane.name
+                )));
+            }
+            if let Some(p) = prev
+                && k.at <= p
+            {
+                return Err(doc_err(format!(
+                    "{who}: @{} keyframes must strictly increase",
+                    lane.name
+                )));
+            }
+            prev = Some(k.at);
+        }
     }
     Ok(())
 }
@@ -765,6 +943,39 @@ impl QSong {
                     if note_end > starts[(bar + 1).min(starts.len() - 1)] {
                         return Err(doc_err(format!("{}: a drum span crosses a barline", t.name)));
                     }
+                }
+            }
+            for a in &t.autos {
+                validate_target(&a.target)?;
+                if a.keys.is_empty() {
+                    return Err(doc_err(format!("{}: empty automation lane", t.name)));
+                }
+                let mut prev: Option<MusicalTime> = None;
+                for (at, val, ease) in &a.keys {
+                    if !crate::grid::value_is_canonical(*val) {
+                        return Err(doc_err(format!(
+                            "{}: automation value off the decimal grid",
+                            t.name
+                        )));
+                    }
+                    if !ease.is_canonical() {
+                        return Err(doc_err(format!("{}: malformed automation easing", t.name)));
+                    }
+                    if *at < MusicalTime::ZERO || *at > end {
+                        return Err(doc_err(format!(
+                            "{}: automation keyframe outside the song",
+                            t.name
+                        )));
+                    }
+                    if let Some(p) = prev
+                        && *at <= p
+                    {
+                        return Err(doc_err(format!(
+                            "{}: automation keyframes must strictly increase",
+                            t.name
+                        )));
+                    }
+                    prev = Some(*at);
                 }
             }
         }
@@ -1334,5 +1545,25 @@ impl Builder {
                 self.open_ties.entry(key).or_default().push((idx, onset + dur));
             }
         }
+    }
+
+    /// Place a pattern's automation lanes into the track at `bar_start`,
+    /// offset to absolute time. Each `@name` resolves through the song-level
+    /// binds; an unbound name errors (validate catches parsed input first).
+    fn place_autos(
+        &mut self,
+        track: usize,
+        autos: &[AutoLane],
+        binds: &[Bind],
+        bar_start: MusicalTime,
+    ) -> Result<(), Error> {
+        for lane in autos {
+            let target = Bind::resolve(binds, &lane.name, track)
+                .map(|b| b.target.clone())
+                .ok_or_else(|| doc_err(format!("automation @{} is not bound", lane.name)))?;
+            let keys = lane.keys.iter().map(|k| (bar_start + k.at, k.value, k.ease)).collect();
+            self.tracks[track].autos.push(QAuto { target, keys });
+        }
+        Ok(())
     }
 }

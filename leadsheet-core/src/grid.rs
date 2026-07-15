@@ -138,6 +138,66 @@ pub fn full_stroke_mask(n: u8) -> u32 {
     (1u32 << n.min(31)) - 1
 }
 
+// ---- Automation value model (decimal-canonical continuous values) ----
+//
+// Note *positions* stay integer ticks — a grid you land on, the way a DAW
+// stores PPQ ticks or samples. Continuous *parameter values* (automation,
+// expression) are decimals instead: pinning a filter cutoff to an integer
+// or rational grid was a category error — it's analog. Values are `f64`
+// internally and canonicalize to a fixed decimal precision at the text
+// boundary, exactly the way BPM snaps to hundredths, so the emit/parse
+// fixpoint holds without a float ever being written raw. The domain on a
+// bind maps this decimal to the target's wire units at render only.
+
+/// Fractional digits an automation value snaps to. Fixed decimal places
+/// (not significant digits) so the grid is uniform across domains: 1/10000
+/// on a normalized 0..1 parameter, harmless overkill on Hz or dB.
+pub const VALUE_DECIMALS: usize = 4;
+
+/// Canonical spelling of an automation value: fixed-precision decimal with
+/// trailing zeros and a bare trailing point stripped (`2000.5`, `0.25`,
+/// `-1.5`, `440`, `0`). The one spelling that survives its own reparse.
+pub fn value_text(v: f64) -> String {
+    let mut s = format!("{:.*}", VALUE_DECIMALS, v);
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    if s == "-0" { "0".to_string() } else { s }
+}
+
+/// A value is canonical iff it survives its own spelling — the BPM rule
+/// ([`crate::doc::bpm_is_canonical`]) generalized to the value grid. Parse
+/// rejects finer precision with the snapped repair value.
+pub fn value_is_canonical(v: f64) -> bool {
+    v.is_finite() && value_text(v).parse::<f64>() == Ok(v)
+}
+
+fn gcd(mut a: i64, mut b: i64) -> i64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a.abs()
+}
+
+/// Canonical spelling of an automation keyframe position: whole 16th cells
+/// as an integer (`0`, `8`), else a lowest-terms fraction of a cell
+/// (`1/2`, `17/2`, `25/3`) — the same tick-exact rational grid note
+/// durations use ([`crate::notation::dur_text`]), so every tick has
+/// exactly one spelling. Positions are time: rational-exact, *not* decimal
+/// (that grid is for continuous values, which are analog).
+pub fn pos_text(t: MusicalTime) -> String {
+    let ticks = t.ticks();
+    debug_assert!(ticks >= 0, "positions are non-negative");
+    let g = gcd(ticks, TICKS_PER_SIXTEENTH).max(1);
+    let (num, den) = (ticks / g, TICKS_PER_SIXTEENTH / g);
+    if den == 1 { num.to_string() } else { format!("{num}/{den}") }
+}
+
 impl QNote {
     /// Construct from the text format's units (16th cells).
     pub fn from_cells(pitch: u8, cell: u32, dur_cells: u32, vel: u8) -> QNote {
@@ -163,6 +223,119 @@ impl QNote {
     }
 }
 
+/// An opaque, beyond-MIDI automation destination — a plugin/host/OSC
+/// parameter the format carries as *intent*. These have no Standard MIDI
+/// File wire form, so [`crate::render`] skips them (an LLM may rewrite a
+/// lane onto a MIDI target if it wants it to sound); a host that speaks
+/// the protocol honors them directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternKind {
+    /// A VST3 plugin parameter (by id/path).
+    Vst3,
+    /// A CLAP plugin parameter.
+    Clap,
+    /// An Open Sound Control address.
+    Osc,
+    /// A host/DAW parameter (mixer, transport, arbitrary automation).
+    Host,
+}
+
+impl ExternKind {
+    pub fn tag(self) -> &'static str {
+        match self {
+            ExternKind::Vst3 => "vst3",
+            ExternKind::Clap => "clap",
+            ExternKind::Osc => "osc",
+            ExternKind::Host => "host",
+        }
+    }
+}
+
+/// Where a bound automation name sends. MIDI targets ([`Target::Cc`],
+/// pitch bend, channel aftertouch, NRPN) render to wire events on the
+/// track's channel; [`Target::Extern`] is beyond-MIDI intent that render
+/// skips. Values are decimals in the target's own units (a `[min..max]`
+/// domain remap on the bind is a later addition):
+/// - `Cc(n)`: controller `n` (0..=127), value 0..=127
+/// - `PitchBend`: signed 14-bit bend −8192..=8191 (0 = center)
+/// - `ChannelPressure`: channel aftertouch, value 0..=127
+/// - `Nrpn(param)`: NRPN parameter `param` (0..=16383), value 0..=16383
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Cc(u8),
+    PitchBend,
+    ChannelPressure,
+    Nrpn(u16),
+    Extern { kind: ExternKind, path: String },
+}
+
+impl Target {
+    /// Whether this target renders to a Standard MIDI File (false for the
+    /// opaque `Extern` intents, which render skips).
+    pub fn is_midi(&self) -> bool {
+        !matches!(self, Target::Extern { .. })
+    }
+}
+
+/// The largest exponential-ease tension magnitude. Bounds `Exp(k)` so the
+/// render-time `exp(k)` stays finite (no inf/nan in the curve); `exp(16)`
+/// is ~9e6, plenty of curvature for any audible ramp.
+pub const EXP_TENSION_MAX: f64 = 16.0;
+
+/// Interpolation from one keyframe to the next.
+///
+/// - `Lin` — straight line (the default; canonically omitted).
+/// - `Hold` — step: holds the value, then jumps at the next keyframe.
+/// - `Smooth` — smoothstep (3t²−2t³), a symmetric ease-in-out.
+/// - `Exp(k)` — exponential tension, `k` a nonzero decimal in
+///   `[-16, 16]`: `k > 0` starts slow then accelerates, `k < 0` the
+///   reverse, `|k|` sets the curvature. `k == 0` is [`Ease::Lin`].
+///
+/// Bezier segments are the intended next addition (control points, an
+/// x→t solve at render); deliberately not yet spelled.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Ease {
+    Lin,
+    Hold,
+    Smooth,
+    Exp(f64),
+}
+
+impl Ease {
+    /// The eased fraction in [0, 1] for a raw fraction `t` in [0, 1].
+    /// `Hold` never interpolates (render steps it), so it passes `t`
+    /// through; the continuous eases warp it. Monotonic with warp(0)=0,
+    /// warp(1)=1 for the bounded `Exp` tension.
+    pub fn warp(self, t: f64) -> f64 {
+        match self {
+            Ease::Lin | Ease::Hold => t,
+            Ease::Smooth => t * t * (3.0 - 2.0 * t),
+            Ease::Exp(k) => ((k * t).exp() - 1.0) / (k.exp() - 1.0),
+        }
+    }
+
+    /// Whether this ease carries decimal-canonical, in-range parameters
+    /// (only `Exp` does). A malformed `Exp(k)` must be rejected by both
+    /// validation boundaries before it reaches the renderer.
+    pub fn is_canonical(self) -> bool {
+        match self {
+            Ease::Exp(k) => value_is_canonical(k) && k != 0.0 && k.abs() <= EXP_TENSION_MAX,
+            _ => true,
+        }
+    }
+}
+
+/// A resolved automation lane on a track: a concrete [`Target`] plus
+/// absolute-tick keyframes `(position, value, ease-to-next)`. `resolve`
+/// expands each pattern-local `@name` lane through the arrangement and
+/// binds the name to its target. Values are decimals in the target's
+/// units (see [`value_text`]); positions are exact ticks, like notes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct QAuto {
+    pub target: Target,
+    pub keys: Vec<(MusicalTime, f64, Ease)>,
+}
+
 #[derive(Debug, Clone)]
 pub struct QTrack {
     pub name: String,
@@ -170,6 +343,8 @@ pub struct QTrack {
     pub is_drums: bool,
     /// Sorted by (onset, pitch).
     pub notes: Vec<QNote>,
+    /// Resolved automation lanes (empty for compiled-from-audio songs).
+    pub autos: Vec<QAuto>,
 }
 
 /// Swing feel, applied at render time. `percent` is where the swung
@@ -382,7 +557,13 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
                 })
                 .collect();
             notes.sort_by(|a: &QNote, b: &QNote| a.onset.cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
-            QTrack { name: t.name.clone(), program: t.program, is_drums: t.is_drums, notes }
+            QTrack {
+                name: t.name.clone(),
+                program: t.program,
+                is_drums: t.is_drums,
+                notes,
+                autos: Vec::new(),
+            }
         })
         .collect();
 
@@ -408,4 +589,67 @@ pub fn quantize(song: &RawSong, opts: &QuantizeOptions) -> (QSong, QuantizeRepor
         max_abs_residual_ms: residual_max,
     };
     (qsong, report)
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::*;
+
+    #[test]
+    fn value_spelling_is_canonical_and_idempotent() {
+        for &(v, want) in
+            &[(2000.5, "2000.5"), (0.25, "0.25"), (-1.5, "-1.5"), (440.0, "440"), (0.0, "0")]
+        {
+            assert_eq!(value_text(v), want);
+            assert!(value_is_canonical(v));
+            let reparsed: f64 = value_text(v).parse().unwrap();
+            assert_eq!(value_text(reparsed), want, "spelling is a fixpoint");
+        }
+        // Negative zero normalizes to `0`.
+        assert_eq!(value_text(-0.0), "0");
+        // Sub-precision input is non-canonical; snapping to the grid makes
+        // it canonical (parse rejects the raw value with this repair).
+        assert!(!value_is_canonical(0.123456));
+        let snapped: f64 = value_text(0.123456).parse().unwrap();
+        assert!(value_is_canonical(snapped));
+    }
+
+    #[test]
+    fn position_spelling_is_tick_exact_rational() {
+        // Whole cells are integers; sub-cell positions are lowest-terms
+        // fractions (the note-duration grid), and 0 is `0`.
+        assert_eq!(pos_text(MusicalTime::ZERO), "0");
+        assert_eq!(pos_text(MusicalTime::from_sixteenths(8)), "8");
+        assert_eq!(pos_text(MusicalTime(120)), "1/2"); // half a cell (a 32nd)
+        assert_eq!(pos_text(MusicalTime(2040)), "17/2"); // 8.5 cells
+        assert_eq!(pos_text(MusicalTime(320)), "4/3"); // a triplet member's edge
+        assert_eq!(pos_text(MusicalTime(137)), "137/240"); // one tick shy of a septuplet edge
+    }
+
+    #[test]
+    fn ease_warp_is_monotonic_and_pinned() {
+        for ease in [Ease::Lin, Ease::Smooth, Ease::Exp(3.0), Ease::Exp(-8.0), Ease::Exp(16.0)] {
+            assert!((ease.warp(0.0) - 0.0).abs() < 1e-9, "{ease:?} warp(0)");
+            assert!((ease.warp(1.0) - 1.0).abs() < 1e-9, "{ease:?} warp(1)");
+            let mut prev = f64::NEG_INFINITY;
+            for i in 0..=20 {
+                let v = ease.warp(i as f64 / 20.0);
+                assert!(v.is_finite(), "{ease:?} nonfinite");
+                assert!(v >= prev - 1e-9, "{ease:?} not monotonic");
+                prev = v;
+            }
+        }
+    }
+
+    #[test]
+    fn exp_ease_canonicality() {
+        assert!(Ease::Exp(2.0).is_canonical());
+        assert!(Ease::Exp(-1.5).is_canonical());
+        assert!(!Ease::Exp(0.0).is_canonical(), "zero tension is Lin");
+        assert!(!Ease::Exp(0.12345).is_canonical(), "sub-decimal tension");
+        assert!(!Ease::Exp(20.0).is_canonical(), "beyond the tension bound");
+        assert!(
+            Ease::Lin.is_canonical() && Ease::Hold.is_canonical() && Ease::Smooth.is_canonical()
+        );
+    }
 }

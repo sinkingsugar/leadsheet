@@ -4,9 +4,11 @@
 //! Written at 960 PPQ = [`grid::TICKS_PER_BEAT`]: 1 internal tick is
 //! 1 MIDI tick, no conversion, no rounding, ever.
 
-use crate::grid::{MusicalTime, QSong, TICKS_PER_BEAT};
+use crate::grid::{Ease, MusicalTime, QSong, TICKS_PER_BEAT, Target};
 use midly::num::{u4, u7, u15, u24, u28};
-use midly::{Format, Header, MetaMessage, MidiMessage, Smf, Timing, TrackEvent, TrackEventKind};
+use midly::{
+    Format, Header, MetaMessage, MidiMessage, PitchBend, Smf, Timing, TrackEvent, TrackEventKind,
+};
 
 pub const PPQ: u16 = TICKS_PER_BEAT as u16;
 
@@ -25,6 +27,114 @@ fn swing_delta(swing: Option<crate::grid::Swing>, onset: MusicalTime) -> i64 {
         sw.percent as i64 * span / 100 - offbeat
     } else {
         0
+    }
+}
+
+/// Sample a keyframed automation lane into `(tick, raw_value)` points:
+/// each continuous segment is warped by its ease and stepped at 1/64-note
+/// resolution; `Hold` emits no interior points (the next keyframe jumps).
+/// Values stay in the target's own units — the per-target mappers below
+/// round, clamp and dedup to wire values, so a future `[min..max]` domain
+/// remap has one place to live.
+fn sample_curve(keys: &[(MusicalTime, f64, Ease)]) -> Vec<(u32, f64)> {
+    const STEP: i64 = TICKS_PER_BEAT / 16; // 1/64 note
+    fn push_pt(pts: &mut Vec<(u32, f64)>, tick: i64, val: f64) {
+        let tick = tick.max(0) as u32;
+        if let Some(&(lt, lv)) = pts.last() {
+            if lv == val {
+                return; // no point for an unchanged value
+            }
+            if lt == tick {
+                pts.pop(); // keep only the latest value at a given tick
+            }
+        }
+        pts.push((tick, val));
+    }
+    let mut pts: Vec<(u32, f64)> = Vec::new();
+    for w in keys.windows(2) {
+        let (t0, v0, ease) = w[0];
+        let (t1, v1, _) = w[1];
+        push_pt(&mut pts, t0.ticks(), v0);
+        if ease != Ease::Hold && (v1 - v0).abs() > f64::EPSILON {
+            let (a, b) = (t0.ticks(), t1.ticks());
+            let mut t = a + STEP;
+            while t < b {
+                let frac = (t - a) as f64 / (b - a) as f64;
+                push_pt(&mut pts, t, v0 + (v1 - v0) * ease.warp(frac));
+                t += STEP;
+            }
+        }
+    }
+    if let Some(&(t, v, _)) = keys.last() {
+        push_pt(&mut pts, t.ticks(), v);
+    }
+    pts
+}
+
+/// Emit a keyframed lane onto its target's wire events, deduping
+/// consecutive identical wire values. MIDI targets produce channel
+/// messages; `Extern` intents have no wire form and are skipped (an LLM
+/// may rewrite them onto a MIDI target if it wants them to sound).
+fn push_automation(
+    events: &mut Vec<(u32, u8, MidiMessage)>,
+    target: &Target,
+    keys: &[(MusicalTime, f64, Ease)],
+) {
+    let cc = |n: u8, v: u8| MidiMessage::Controller { controller: u7::new(n), value: u7::new(v) };
+    let pts = sample_curve(keys);
+    match target {
+        Target::Cc(n) => {
+            let mut last: Option<u8> = None;
+            for (tick, v) in pts {
+                let w = v.round().clamp(0.0, 127.0) as u8;
+                if last != Some(w) {
+                    last = Some(w);
+                    events.push((tick, 0, cc(*n, w)));
+                }
+            }
+        }
+        Target::ChannelPressure => {
+            let mut last: Option<u8> = None;
+            for (tick, v) in pts {
+                let w = v.round().clamp(0.0, 127.0) as u8;
+                if last != Some(w) {
+                    last = Some(w);
+                    events.push((tick, 0, MidiMessage::ChannelAftertouch { vel: u7::new(w) }));
+                }
+            }
+        }
+        Target::PitchBend => {
+            let mut last: Option<i16> = None;
+            for (tick, v) in pts {
+                let w = v.round().clamp(-8192.0, 8191.0) as i16;
+                if last != Some(w) {
+                    last = Some(w);
+                    events.push((tick, 0, MidiMessage::PitchBend { bend: PitchBend::from_int(w) }));
+                }
+            }
+        }
+        Target::Nrpn(param) => {
+            // Select the parameter once (CC99/98), then stream 14-bit data
+            // (CC6 MSB / CC38 LSB) as the value moves.
+            let (pmsb, plsb) = ((param >> 7) as u8, (param & 0x7f) as u8);
+            let mut last: Option<u16> = None;
+            let mut selected = false;
+            for (tick, v) in pts {
+                let w = v.round().clamp(0.0, 16383.0) as u16;
+                if last == Some(w) {
+                    continue;
+                }
+                last = Some(w);
+                if !selected {
+                    events.push((tick, 0, cc(99, pmsb)));
+                    events.push((tick, 0, cc(98, plsb)));
+                    selected = true;
+                }
+                events.push((tick, 0, cc(6, (w >> 7) as u8)));
+                events.push((tick, 0, cc(38, (w & 0x7f) as u8)));
+            }
+        }
+        Target::Extern { .. } => {}
     }
 }
 
@@ -146,6 +256,13 @@ pub fn render(q: &QSong) -> Vec<u8> {
                     MidiMessage::NoteOff { key: u7::new(n.pitch), vel: u7::new(0) },
                 ));
             }
+        }
+        // Automation lanes: sample each keyframed curve onto its target's
+        // wire events on this track's channel. Non-MIDI targets carry no
+        // wire form and are skipped; events sort before the note-ons at the
+        // same tick (order 0 < 1).
+        for a in &track.autos {
+            push_automation(&mut events, &a.target, &a.keys);
         }
         events.sort_by_key(|(tick, order, msg)| {
             let key = match msg {

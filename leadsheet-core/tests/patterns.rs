@@ -69,9 +69,27 @@ fn structured_song() -> QSong {
         swing: None,
         n_bars: 68,
         tracks: vec![
-            QTrack { name: "bass".into(), program: 33, is_drums: false, notes: bass },
-            QTrack { name: "drums".into(), program: 0, is_drums: true, notes: drums },
-            QTrack { name: "lead".into(), program: 81, is_drums: false, notes: lead },
+            QTrack {
+                autos: Vec::new(),
+                name: "bass".into(),
+                program: 33,
+                is_drums: false,
+                notes: bass,
+            },
+            QTrack {
+                autos: Vec::new(),
+                name: "drums".into(),
+                program: 0,
+                is_drums: true,
+                notes: drums,
+            },
+            QTrack {
+                autos: Vec::new(),
+                name: "lead".into(),
+                program: 81,
+                is_drums: false,
+                notes: lead,
+            },
         ],
     }
 }

@@ -26,13 +26,13 @@
 
 use crate::chord;
 use crate::doc::{
-    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, LaneItem, MelodicBar,
-    PatternBody, PatternDef, Row, TimelineItem,
+    AutoLane, Bind, BindScope, ChordCol, DirectItem, Document, DrumsBody, Header, Instrument,
+    LaneItem, MelodicBar, PatternBody, PatternDef, Row, TimelineItem,
 };
 use crate::drums::{
     self, LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT,
 };
-use crate::grid::{MusicalTime, QSong, QTrack, TICKS_PER_BEAT};
+use crate::grid::{Ease, MusicalTime, QSong, QTrack, TICKS_PER_BEAT, Target};
 use crate::notation::{self, Tok, emit_token_spelled};
 use crate::pattern;
 use std::collections::BTreeMap;
@@ -696,6 +696,7 @@ pub fn from_qsong(q: &QSong) -> Document {
                 meter: Some(pattern_bodies[i].meter()).filter(|m| *m != q.meter),
                 kin,
                 body,
+                autos: Vec::new(),
             }
         })
         .collect();
@@ -733,6 +734,7 @@ pub fn from_qsong(q: &QSong) -> Document {
                 is_drums: t.is_drums,
             })
             .collect(),
+        binds: Vec::new(),
         patterns,
         timeline,
     }
@@ -779,6 +781,19 @@ pub fn emit_document(d: &Document) -> String {
             "# instruments: {}",
             d.instruments.iter().map(instrument_field).collect::<Vec<_>>().join(" ")
         );
+    }
+    if !d.binds.is_empty() {
+        // Sorted by their spelled key so emission is order-independent
+        // (canonical); an instrument scope prefixes `inst.`.
+        let bind_key = |b: &Bind| match b.scope {
+            BindScope::Song => b.name.clone(),
+            BindScope::Instrument(i) => format!("{}.{}", d.instruments[i].name, b.name),
+        };
+        let mut binds: Vec<&Bind> = d.binds.iter().collect();
+        binds.sort_by_key(|b| bind_key(b));
+        for b in binds {
+            let _ = writeln!(out, "#bind {} = {}", bind_key(b), target_text(&b.target));
+        }
     }
     out.push('\n');
 
@@ -846,6 +861,7 @@ pub fn emit_document(d: &Document) -> String {
                     let _ = writeln!(out, "P{:<id_w$} {:<name_w$} | {text} |", p.id, name_field(p));
                 }
             }
+            emit_autos(&mut out, &p.autos);
         }
     }
 
@@ -917,11 +933,60 @@ fn emit_direct(out: &mut String, d: &Document, di: &DirectItem, flats: bool) {
             let _ = writeln!(out, "b{} {name}*{dynamic}{meter} | {text} |", di.bar);
         }
     }
+    emit_autos(out, &di.autos);
 }
 
 /// ` N/D` when a pattern/direct overrides the header meter.
 fn meter_suffix(m: Option<(u32, u32)>) -> String {
     m.map(|(n, d)| format!(" {n}/{d}")).unwrap_or_default()
+}
+
+/// Canonical spelling of a bind target.
+fn target_text(t: &Target) -> String {
+    match t {
+        Target::Cc(n) => format!("cc{n}"),
+        Target::PitchBend => "bend".to_string(),
+        Target::ChannelPressure => "at".to_string(),
+        Target::Nrpn(p) => format!("nrpn{p}"),
+        Target::Extern { kind, path } => format!("{}:{}", kind.tag(), path),
+    }
+}
+
+/// Canonical spelling of an ease-to-next: `None` for the default `Lin`
+/// (omitted), else the keyword. `Exp` carries its decimal tension.
+fn ease_text(ease: Ease) -> Option<String> {
+    match ease {
+        Ease::Lin => None,
+        Ease::Hold => Some("hold".to_string()),
+        Ease::Smooth => Some("smooth".to_string()),
+        Ease::Exp(k) => Some(format!("exp:{}", crate::grid::value_text(k))),
+    }
+}
+
+/// Canonical spelling of one automation lane. Keyframes are already sorted
+/// (parse/validate guarantee it); positions are the tick-exact rational
+/// cell spelling, the default `lin` ease is omitted, and the last keyframe
+/// — which eases nowhere — carries none.
+fn auto_lane_text(lane: &AutoLane) -> String {
+    let mut s = format!("@{} {{", lane.name);
+    for (i, k) in lane.keys.iter().enumerate() {
+        let _ = write!(s, " {}:{}", crate::grid::pos_text(k.at), crate::grid::value_text(k.value));
+        if i + 1 < lane.keys.len()
+            && let Some(tok) = ease_text(k.ease)
+        {
+            s.push(' ');
+            s.push_str(&tok);
+        }
+    }
+    s.push_str(" }");
+    s
+}
+
+/// Emit a pattern/direct's automation lanes, indented one per line.
+fn emit_autos(out: &mut String, autos: &[AutoLane]) {
+    for lane in autos {
+        let _ = writeln!(out, "  {}", auto_lane_text(lane));
+    }
 }
 
 /// QSong → canonical text (the historical entry point): structure is

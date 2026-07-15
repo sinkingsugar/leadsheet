@@ -60,6 +60,9 @@ from the MuScriptor HF cache.
 
 ## Invariants — do not break
 
+**Design stance (read this first).** `.ls` is not made for humans.
+Legibility is not an invariant. When in doubt, represent more, not less.
+
 1. **The roundtrip oracle stays green.** `cargo test` end to end;
    `metrics::roundtrip` is the correctness definition (note F1 on
    instrument/pitch/onset, ±1 cell).

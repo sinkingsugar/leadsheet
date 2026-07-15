@@ -25,14 +25,14 @@
 
 use crate::chord;
 use crate::doc::{
-    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, LaneItem, MelodicBar,
-    PatternBody, PatternDef, Row, TimelineItem,
+    AutoLane, Bind, BindScope, ChordCol, DirectItem, Document, DrumsBody, Header, Instrument,
+    Keyframe, LaneItem, MelodicBar, PatternBody, PatternDef, Row, TimelineItem,
 };
 use crate::drums::{
     self, LANE_ACCENT, LANE_D2, LANE_D3, LANE_D4, LANE_EMPTY, LANE_GHOST, LANE_HIT,
 };
 use crate::error::{Diagnostic, Error};
-use crate::grid::{MusicalTime, QSong};
+use crate::grid::{Ease, ExternKind, MusicalTime, QSong, TICKS_PER_SIXTEENTH, Target};
 use crate::key::Key;
 use crate::notation;
 use std::collections::HashMap;
@@ -504,6 +504,227 @@ fn parse_head(head: &str) -> Result<BlockTarget, Raw> {
         .at(head))
 }
 
+const BIND_HINT: &str = "a bind maps a name to a target: `#bind cutoff = cc74` (song-level) or \
+                         `#bind lead.cutoff = cc74` (instrument-scoped). targets: cc0..=cc127, \
+                         bend, at, nrpn0..=nrpn16383, or opaque vst3:/clap:/osc:/host:<path>";
+
+/// `#bind name = target` or `#bind inst.name = target` (the `bind` keyword
+/// already stripped). A dotted left side scopes the bind to that
+/// instrument (innermost wins); a plain name is song-level.
+fn parse_bind(spec: &str, track_index: &HashMap<String, usize>) -> Result<Bind, Raw> {
+    let (lhs, target) = spec.split_once('=').ok_or_else(|| {
+        raw("bad-bind", format!("bind needs `name = target`: {spec:?}")).hint(BIND_HINT)
+    })?;
+    let lhs = lhs.trim();
+    let (scope, name) = match lhs.split_once('.') {
+        Some((inst, name)) => {
+            let inst = inst.trim();
+            let idx = *track_index.get(inst).ok_or_else(|| {
+                raw("bad-bind", format!("unknown instrument {inst:?} in scoped bind"))
+                    .hint(BIND_HINT)
+                    .at(inst)
+            })?;
+            (BindScope::Instrument(idx), name.trim())
+        }
+        None => (BindScope::Song, lhs),
+    };
+    if !crate::doc::valid_name(name) {
+        return Err(raw("bad-bind", format!("bad bind name {name:?} (letters, digits, _ or -)"))
+            .hint(BIND_HINT)
+            .at(name));
+    }
+    Ok(Bind { scope, name: name.to_string(), target: parse_target(target.trim())? })
+}
+
+/// A `#bind` target: a MIDI destination (`cc<n>`, `bend`, `at`,
+/// `nrpn<param>`) or an opaque beyond-MIDI intent (`vst3:`/`clap:`/`osc:`/
+/// `host:` + a path). Non-MIDI targets render to nothing (carried as
+/// intent); MIDI targets render on the track's channel.
+fn parse_target(t: &str) -> Result<Target, Raw> {
+    let bad = || raw("bad-bind", format!("unknown bind target {t:?}")).hint(BIND_HINT).at(t);
+    if let Some(n) = t.strip_prefix("cc") {
+        let n = n.parse::<u8>().ok().filter(|n| *n <= 127).ok_or_else(|| {
+            raw("bad-bind", format!("bad controller number in {t:?} (cc0..=cc127)"))
+                .hint(BIND_HINT)
+                .at(t)
+        })?;
+        return Ok(Target::Cc(n));
+    }
+    if t == "bend" {
+        return Ok(Target::PitchBend);
+    }
+    if t == "at" {
+        return Ok(Target::ChannelPressure);
+    }
+    if let Some(p) = t.strip_prefix("nrpn") {
+        let p = p.parse::<u16>().ok().filter(|p| *p <= 16383).ok_or_else(|| {
+            raw("bad-bind", format!("bad NRPN parameter in {t:?} (nrpn0..=nrpn16383)"))
+                .hint(BIND_HINT)
+                .at(t)
+        })?;
+        return Ok(Target::Nrpn(p));
+    }
+    for kind in [ExternKind::Vst3, ExternKind::Clap, ExternKind::Osc, ExternKind::Host] {
+        if let Some(path) = t.strip_prefix(kind.tag()).and_then(|r| r.strip_prefix(':')) {
+            if !crate::doc::valid_extern_path(path) {
+                return Err(raw(
+                    "bad-bind",
+                    format!("extern path {path:?} must be non-empty graphic ASCII (no spaces)"),
+                )
+                .hint(BIND_HINT)
+                .at(t));
+            }
+            return Ok(Target::Extern { kind, path: path.to_string() });
+        }
+    }
+    Err(bad())
+}
+
+const AUTO_HINT: &str = "an automation lane is `@name { pos:value [ease] ... }`: positions are \
+                         16th cells or lowest-terms fractions (`8`, `1/2`, `17/2`), values are \
+                         decimals, eases are `lin` (default), `hold`, `smooth` or `exp:k`, e.g. \
+                         `@cutoff { 0:0 8:100 smooth 16:40 }`";
+
+/// Parse a keyframe position: whole 16th cells or a lowest-terms fraction
+/// of a cell (`8`, `1/2`, `17/2`) — tick-exact, non-negative, no decimals
+/// (time is rational, not analog). Mirrors note-duration spelling.
+fn parse_cell_pos(s: &str, tok: &str) -> Result<MusicalTime, Raw> {
+    let bad = || {
+        raw("bad-automation", format!("bad keyframe position {s:?} (cells or a fraction like 1/2)"))
+            .hint(AUTO_HINT)
+            .at(tok)
+    };
+    let ticks: i64 = if let Some((n, d)) = s.split_once('/') {
+        let num: i64 = n.parse().ok().filter(|v: &i64| *v >= 0).ok_or_else(bad)?;
+        let den: i64 = d.parse().ok().filter(|v: &i64| (1..=960).contains(v)).ok_or_else(bad)?;
+        let raw_ticks = num.checked_mul(TICKS_PER_SIXTEENTH).ok_or_else(bad)?;
+        if raw_ticks % den != 0 {
+            return Err(raw(
+                "bad-automation",
+                format!("position {s} doesn't land on the tick grid ({TICKS_PER_SIXTEENTH}/cell)"),
+            )
+            .hint(AUTO_HINT)
+            .at(tok));
+        }
+        raw_ticks / den
+    } else {
+        let cells: i64 = s.parse().ok().filter(|v: &i64| *v >= 0).ok_or_else(bad)?;
+        cells.checked_mul(TICKS_PER_SIXTEENTH).ok_or_else(bad)?
+    };
+    Ok(MusicalTime(ticks))
+}
+
+/// An easing keyword — `lin`, `hold`, `smooth`, or `exp:k` — or `None`
+/// when the token isn't one (a `pos:value` keyframe). A malformed `exp:k`
+/// (non-numeric, zero, out of range, or off the decimal grid) is an error,
+/// not a fall-through to keyframe parsing.
+fn parse_ease_token(tok: &str) -> Result<Option<Ease>, Raw> {
+    match tok {
+        "lin" => Ok(Some(Ease::Lin)),
+        "hold" => Ok(Some(Ease::Hold)),
+        "smooth" => Ok(Some(Ease::Smooth)),
+        _ => match tok.strip_prefix("exp:") {
+            None => Ok(None),
+            Some(k) => {
+                let k = k.parse::<f64>().ok().filter(|v: &f64| v.is_finite()).ok_or_else(|| {
+                    raw("bad-automation", format!("bad exp tension {k:?}")).hint(AUTO_HINT).at(tok)
+                })?;
+                let ease = Ease::Exp(k);
+                if !ease.is_canonical() {
+                    return Err(raw(
+                        "bad-automation",
+                        format!(
+                            "exp tension {k} must be nonzero, at most {} in magnitude, and on the \
+                             {}-decimal grid",
+                            crate::grid::EXP_TENSION_MAX,
+                            crate::grid::VALUE_DECIMALS
+                        ),
+                    )
+                    .hint(AUTO_HINT)
+                    .at(tok));
+                }
+                Ok(Some(ease))
+            }
+        },
+    }
+}
+
+/// `@name { pos:value [ease] ... }` — one automation lane (the `@` already
+/// stripped). Keyframes sort by position (canonical); an ease token
+/// (`lin`/`hold`/`smooth`/`exp:k`) sets the *preceding* keyframe's
+/// ease-to-next; the last keyframe's ease is normalized away (nothing
+/// follows it), keeping emission a fixpoint.
+fn parse_auto_lane(rest: &str) -> Result<AutoLane, Raw> {
+    let (name, body) = rest.split_once('{').ok_or_else(|| {
+        raw("bad-automation", format!("automation lane needs `{{ … }}`: {rest:?}")).hint(AUTO_HINT)
+    })?;
+    let name = name.trim();
+    if !crate::doc::valid_name(name) {
+        return Err(raw("bad-automation", format!("bad automation name {name:?}"))
+            .hint(AUTO_HINT)
+            .at(name));
+    }
+    let body = body.trim_end().strip_suffix('}').ok_or_else(|| {
+        raw("bad-automation", "unclosed automation lane — missing `}`").hint(AUTO_HINT)
+    })?;
+    let mut keys: Vec<Keyframe> = Vec::new();
+    for tok in body.split_whitespace() {
+        if let Some(ease) = parse_ease_token(tok)? {
+            keys.last_mut()
+                .ok_or_else(|| {
+                    raw("bad-automation", format!("ease {tok:?} before any keyframe"))
+                        .hint(AUTO_HINT)
+                })?
+                .ease = ease;
+            continue;
+        }
+        let (pos, val) = tok.split_once(':').ok_or_else(|| {
+            raw("bad-automation", format!("expected `pos:value` or an ease, got {tok:?}"))
+                .hint(AUTO_HINT)
+                .at(tok)
+        })?;
+        let at = parse_cell_pos(pos, tok)?;
+        let value = val.parse::<f64>().ok().filter(|v: &f64| v.is_finite()).ok_or_else(|| {
+            raw("bad-automation", format!("bad keyframe value {val:?}")).hint(AUTO_HINT).at(tok)
+        })?;
+        if !crate::grid::value_is_canonical(value) {
+            return Err(raw(
+                "bad-automation",
+                format!(
+                    "value {val} is finer than the {}-decimal grid",
+                    crate::grid::VALUE_DECIMALS
+                ),
+            )
+            .hint(format!("snap it: write `{}`", crate::grid::value_text(value)))
+            .at(tok));
+        }
+        keys.push(Keyframe { at, value, ease: Ease::Lin });
+    }
+    if keys.is_empty() {
+        return Err(raw("bad-automation", "automation lane has no keyframes").hint(AUTO_HINT));
+    }
+    keys.sort_by_key(|k| k.at);
+    if let Some(w) = keys.windows(2).find(|w| w[0].at == w[1].at) {
+        return Err(raw(
+            "bad-automation",
+            format!("two keyframes at position {}", crate::grid::pos_text(w[0].at)),
+        )
+        .hint(AUTO_HINT));
+    }
+    if let Some(last) = keys.last_mut() {
+        last.ease = Ease::Lin;
+    }
+    Ok(AutoLane { name: name.to_string(), keys })
+}
+
+/// Where the next `@` automation lane attaches (index into `patterns` or
+/// `timeline`).
+#[derive(Clone, Copy)]
+enum AutoDef {
+    Pattern(usize),
+    Direct(usize),
+}
+
 /// Parse `.ls` text into its faithful AST. Every structural error is
 /// caught here with a line-accurate diagnostic; the returned Document
 /// resolves without error.
@@ -511,10 +732,12 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
     let mut header: Option<Header> = None;
     let mut instruments: Vec<Instrument> = Vec::new();
     let mut track_index: HashMap<String, usize> = HashMap::new();
+    let mut binds: Vec<Bind> = Vec::new();
     let mut patterns: Vec<PatternDef> = Vec::new();
     let mut pattern_index: HashMap<usize, usize> = HashMap::new(); // id → patterns idx
     let mut timeline: Vec<TimelineItem> = Vec::new();
     let mut pending: Option<DrumBlock> = None;
+    let mut last_def: Option<AutoDef> = None; // where the next @ lane attaches
     let mut next_bar = 0u32; // arrangement cursor (for the MAX_BARS cap)
 
     let known_patterns = |pattern_index: &HashMap<usize, usize>| -> String {
@@ -585,6 +808,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     meter: block.meter,
                     kin: None,
                     body,
+                    autos: Vec::new(),
                 });
             }
             BlockTarget::Direct(bar) => {
@@ -601,6 +825,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     base_vel: block.base_vel,
                     meter: block.meter,
                     body,
+                    autos: Vec::new(),
                 }));
             }
         }
@@ -647,6 +872,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
             }
             let block = pending.take().unwrap();
             let opened = block.line;
+            let was_direct = matches!(block.target, BlockTarget::Direct(_));
             flush_block(
                 block,
                 &mut patterns,
@@ -655,9 +881,51 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                 bar_cap(header.as_ref()),
             )
             .map_err(|r| diag(opened, "", r))?;
+            last_def = Some(if was_direct {
+                AutoDef::Direct(timeline.len() - 1)
+            } else {
+                AutoDef::Pattern(patterns.len() - 1)
+            });
+        }
+
+        if let Some(rest) = line.strip_prefix('@') {
+            let lane = parse_auto_lane(rest).map_err(err)?;
+            match last_def {
+                Some(AutoDef::Pattern(i)) => patterns[i].autos.push(lane),
+                Some(AutoDef::Direct(i)) => {
+                    if let TimelineItem::Direct(d) = &mut timeline[i] {
+                        d.autos.push(lane);
+                    }
+                }
+                None => {
+                    return Err(err(raw(
+                        "orphan-automation",
+                        "automation lane with no pattern or direct bar above it",
+                    )
+                    .hint(
+                        "put `@name { ... }` on the line(s) right after the P<n>/b<n> it belongs to",
+                    )));
+                }
+            }
+            continue;
         }
 
         if let Some(rest) = line.strip_prefix('#') {
+            let trimmed = rest.trim_start();
+            if let Some(after) = trimmed.strip_prefix("bind")
+                && after.starts_with(|c: char| c.is_whitespace())
+            {
+                let b = parse_bind(after.trim(), &track_index).map_err(err)?;
+                if binds.iter().any(|x| x.name == b.name && x.scope == b.scope) {
+                    return Err(err(raw(
+                        "duplicate-bind",
+                        format!("duplicate bind {:?} in the same scope", b.name),
+                    )
+                    .hint("each name binds once per scope (song-level, or per instrument)")));
+                }
+                binds.push(b);
+                continue;
+            }
             parse_header_line(rest, &mut header, &mut instruments, &mut track_index)
                 .map_err(err)?;
             continue;
@@ -711,6 +979,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
             }
             next_bar += reps * unit;
             timeline.push(TimelineItem::Row(Row { label, stack: ids, reps }));
+            last_def = None; // a row separates automation from the patterns above
             continue;
         }
 
@@ -817,7 +1086,16 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                         .at(head)));
                 }
                 pattern_index.insert(id, patterns.len());
-                patterns.push(PatternDef { id, track: ti, base_vel, meter, kin, body });
+                patterns.push(PatternDef {
+                    id,
+                    track: ti,
+                    base_vel,
+                    meter,
+                    kin,
+                    body,
+                    autos: Vec::new(),
+                });
+                last_def = Some(AutoDef::Pattern(patterns.len() - 1));
             }
             BlockTarget::Direct(bar) => {
                 let cap = bar_cap(header.as_ref());
@@ -835,7 +1113,9 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     base_vel,
                     meter,
                     body,
+                    autos: Vec::new(),
                 }));
+                last_def = Some(AutoDef::Direct(timeline.len() - 1));
             }
         }
     }
@@ -861,7 +1141,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         )
         .map_err(|r| diag(opened, "", r))?;
     }
-    let doc = Document { header, instruments, patterns, timeline };
+    let doc = Document { header, instruments, binds, patterns, timeline };
     // Meter overrides interact globally (stack agreement, bar claims,
     // the tick domain under mixed meters) — one authoritative pass,
     // shared with validate()/resolve(), so a parsed Document keeps the

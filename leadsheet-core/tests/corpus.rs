@@ -10,6 +10,11 @@
 //! - `matrix-excerpt.mid` — the first ~45 s of a real MuScriptor
 //!   transcription (Gio's playing), timing preserved: the file declares
 //!   120 BPM while the take is ~125, so it exercises the auto-infer path.
+//! - `automation.ls` — an `.ls`-only fixture (no `.mid` pair): compress
+//!   can't yet synthesize automation from audio, so it can only be
+//!   authored. Guarded by `corpus_ls_is_canonical` (it must survive
+//!   `fmt`), it byte-locks the bind/lane spelling — scoped binds, every
+//!   target kind, `smooth`/`exp` easings and a fractional keyframe.
 //!
 //! Regeneration (maintainer action): `cargo test --test corpus -- --ignored`
 //! rewrites the synthetic `.mid`s from the builders, re-trims the Matrix
@@ -56,18 +61,30 @@ fn corpus_is_byte_stable() {
     assert!(checked >= 4, "expected at least 4 corpus fixtures, found {checked}");
 }
 
-/// Every corpus `.ls` must itself be canonical (fmt is a no-op on it).
+/// Every corpus `.ls` must itself be canonical. Two senses, both byte-exact:
+/// - `fmt` is a no-op (the Document round-trip, which preserves author
+///   structure — and automation, which the compress path can't synthesize);
+/// - a `.mid`-paired fixture is also a *compress* fixpoint (parse it to
+///   notes, re-compress, unchanged). The `.ls`-only automation fixture has
+///   no `.mid` and legitimately drops its binds/lanes through the lossy
+///   QSong, so it is checked for `fmt`-canonicality only.
 #[test]
 fn corpus_ls_is_canonical() {
+    use leadsheet_core::emit::emit_document;
+    use leadsheet_core::parse::{parse, parse_document};
     for entry in std::fs::read_dir(corpus_dir()).expect("corpus/ exists") {
         let path = entry.unwrap().path();
         if path.extension().and_then(|e| e.to_str()) != Some("ls") {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
-        let q = leadsheet_core::parse::parse(&text)
-            .unwrap_or_else(|e| panic!("{} must parse: {e}", path.display()));
-        assert_eq!(emit::emit(&q), text, "{} is not canonical", path.display());
+        let doc =
+            parse_document(&text).unwrap_or_else(|e| panic!("{} must parse: {e}", path.display()));
+        assert_eq!(emit_document(&doc), text, "{} is not fmt-canonical", path.display());
+        if path.with_extension("mid").exists() {
+            let q = parse(&text).unwrap();
+            assert_eq!(emit::emit(&q), text, "{} is not a compress fixpoint", path.display());
+        }
     }
 }
 
@@ -97,7 +114,7 @@ fn song(name: &str, bpm: f64, meter: (u32, u32), n_bars: u32, tracks: Vec<QTrack
 
 fn track(name: &str, program: u8, is_drums: bool, mut notes: Vec<QNote>) -> QTrack {
     notes.sort_by(|a, b| a.onset.cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
-    QTrack { name: name.into(), program, is_drums, notes }
+    QTrack { autos: Vec::new(), name: name.into(), program, is_drums, notes }
 }
 
 /// 40 bars of verse/chorus pop: intro (bass+drums), verses add keys

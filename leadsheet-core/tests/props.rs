@@ -288,7 +288,13 @@ fn assemble(cfg: GenCfg, t: &TrackGen, idx: usize, cpb: u32, n_bars: u32) -> QTr
         }
     }
     kept.sort_by(|a, b| a.onset.cmp(&b.onset).then(a.pitch.cmp(&b.pitch)));
-    QTrack { name: format!("t{idx}"), program: t.program, is_drums: t.is_drums, notes: kept }
+    QTrack {
+        autos: Vec::new(),
+        name: format!("t{idx}"),
+        program: t.program,
+        is_drums: t.is_drums,
+        notes: kept,
+    }
 }
 
 fn arb_qsong(cfg: GenCfg) -> impl Strategy<Value = QSong> {
@@ -392,7 +398,13 @@ fn one_track(notes: Vec<QNote>, n_bars: u32) -> QSong {
         key: None,
         swing: None,
         n_bars,
-        tracks: vec![QTrack { name: "p".into(), program: 0, is_drums: false, notes }],
+        tracks: vec![QTrack {
+            autos: Vec::new(),
+            name: "p".into(),
+            program: 0,
+            is_drums: false,
+            notes,
+        }],
     }
 }
 

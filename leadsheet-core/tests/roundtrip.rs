@@ -22,6 +22,7 @@ fn tricky_qsong() -> QSong {
         n_bars: 5,
         tracks: vec![
             QTrack {
+                autos: Vec::new(),
                 name: "piano".into(),
                 program: 0,
                 is_drums: false,
@@ -43,6 +44,7 @@ fn tricky_qsong() -> QSong {
                 ],
             },
             QTrack {
+                autos: Vec::new(),
                 name: "drums".into(),
                 program: 0,
                 is_drums: true,

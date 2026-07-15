@@ -37,11 +37,11 @@
 //! without panicking.
 
 use leadsheet_core::doc::{
-    ChordCol, DirectItem, Document, DrumsBody, Header, Instrument, LaneItem, MelodicBar,
-    PatternBody, PatternDef, Row, TimelineItem,
+    AutoLane, Bind, BindScope, ChordCol, DirectItem, Document, DrumsBody, Header, Instrument,
+    Keyframe, LaneItem, MelodicBar, PatternBody, PatternDef, Row, TimelineItem,
 };
 use leadsheet_core::drums::LANE_D4;
-use leadsheet_core::grid::{MusicalTime, QSong, Swing};
+use leadsheet_core::grid::{Ease, ExternKind, MusicalTime, QSong, Swing, Target};
 use leadsheet_core::key::Key;
 use leadsheet_core::notation::{Mark, Tok, tuplet_boundary};
 use leadsheet_core::{chord, emit, parse};
@@ -327,6 +327,105 @@ fn arb_instruments() -> impl Strategy<Value = Vec<Instrument>> {
         })
 }
 
+// ---------------------------------------------------------------------------
+// Automation: a deterministic, valid-by-construction bind table plus
+// per-body lanes, derived from the body's own coordinates (no extra
+// strategy inputs, so shrinking stays stable). This makes
+// `document_canonicality` guard the bind/lane/keyframe emit↔parse↔resolve
+// paths — easings, fractional positions, scoped resolution, every target.
+
+/// A cheap deterministic byte stream (an LCG) seeded per body.
+struct Bytes(u64);
+impl Bytes {
+    fn new(seed: u64) -> Self {
+        Bytes(seed ^ 0x9E37_79B9_7F4A_7C15)
+    }
+    fn next(&mut self) -> u8 {
+        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (self.0 >> 56) as u8
+    }
+}
+
+/// A varied target for an instrument-scoped bind (exercises every kind).
+fn auto_target(i: u8) -> Target {
+    match i % 4 {
+        0 => Target::ChannelPressure,
+        1 => Target::Nrpn(1000 + i as u16),
+        2 => Target::Extern { kind: ExternKind::Osc, path: format!("/p{i}") },
+        _ => Target::Cc(20 + i),
+    }
+}
+
+/// The bind table every generated Document carries: song-level `a`/`b`,
+/// plus per-instrument `a` (overrides the song `a`) and `c` for the first
+/// few instruments. So `a`/`b` resolve on any track; `c` only where scoped.
+fn gen_binds(instruments: &[Instrument]) -> Vec<Bind> {
+    let mut binds = vec![
+        Bind { scope: BindScope::Song, name: "a".into(), target: Target::Cc(74) },
+        Bind { scope: BindScope::Song, name: "b".into(), target: Target::PitchBend },
+    ];
+    for i in 0..instruments.len().min(3) {
+        binds.push(Bind {
+            scope: BindScope::Instrument(i),
+            name: "a".into(),
+            target: Target::Cc(10 + i as u8),
+        });
+        binds.push(Bind {
+            scope: BindScope::Instrument(i),
+            name: "c".into(),
+            target: auto_target(i as u8),
+        });
+    }
+    binds
+}
+
+fn gen_ease(b: u8) -> Ease {
+    match b % 5 {
+        0 => Ease::Lin,
+        1 => Ease::Hold,
+        2 => Ease::Smooth,
+        3 => Ease::Exp(2.0),
+        _ => Ease::Exp(-3.5),
+    }
+}
+
+/// 0–2 valid lanes over a body of `span_cells` cells: bound names only
+/// (`c` iff `allow_c`), strictly-increasing sub-cell positions, canonical
+/// quarter-step values, varied easings (last normalized to `Lin`).
+fn gen_autos(seed: u64, span_cells: u32, allow_c: bool) -> Vec<AutoLane> {
+    let mut b = Bytes::new(seed);
+    let names: &[&str] = if allow_c { &["a", "b", "c"] } else { &["a", "b"] };
+    let span_ticks = span_cells as i64 * 240;
+    let n_lanes = (b.next() % 3) as usize;
+    let mut lanes: Vec<AutoLane> = Vec::new();
+    for _ in 0..n_lanes {
+        let name = names[b.next() as usize % names.len()];
+        if lanes.iter().any(|l| l.name == name) {
+            continue; // one lane per name per body
+        }
+        let want = 1 + (b.next() % 4) as usize;
+        let mut ticks: Vec<i64> = (0..want)
+            .map(|_| {
+                // Cell boundary + a sub-cell offset → mostly fractional.
+                (b.next() as i64 * 240 + b.next() as i64) % (span_ticks + 1)
+            })
+            .collect();
+        ticks.sort_unstable();
+        ticks.dedup();
+        let keys: Vec<Keyframe> = ticks
+            .iter()
+            .enumerate()
+            .map(|(i, &t)| Keyframe {
+                at: MusicalTime(t),
+                value: (b.next() as i32 - 128) as f64 / 4.0, // multiples of 0.25 (canonical)
+                ease: if i + 1 == ticks.len() { Ease::Lin } else { gen_ease(b.next()) },
+            })
+            .collect();
+        lanes.push(AutoLane { name: name.to_string(), keys });
+    }
+    lanes
+}
+
 fn build_document(
     header: Header,
     instruments: Vec<Instrument>,
@@ -357,6 +456,11 @@ fn build_document(
             } else if let (Some(kp), false) = (kin_pick, earlier.is_empty()) {
                 kin = Some(earlier[*kp as usize % earlier.len()]);
             }
+            let autos = gen_autos(
+                (*id as u64).wrapping_mul(2654435761) ^ ((track as u64) << 20),
+                cpb * body.n_bars(),
+                track < instruments.len().min(3),
+            );
             patterns.push(PatternDef {
                 id: *id,
                 track,
@@ -364,6 +468,7 @@ fn build_document(
                 meter: alt_meter,
                 kin,
                 body,
+                autos,
             });
         }
     }
@@ -407,17 +512,24 @@ fn build_document(
                         db.variant_base = Some(cands[vp as usize % cands.len()]);
                     }
                 }
+                let autos = gen_autos(
+                    ((bar as u64) << 24) ^ ((track as u64) << 8) ^ vel as u64,
+                    cpb * body.n_bars(),
+                    track < instruments.len().min(3),
+                );
                 timeline.push(TimelineItem::Direct(DirectItem {
                     bar: 1 + (bar % 8) as u32,
                     track,
                     base_vel: BUCKETS[vel as usize % BUCKETS.len()],
                     meter: alt_meter,
                     body,
+                    autos,
                 }));
             }
         }
     }
-    Document { header, instruments, patterns, timeline }
+    let binds = gen_binds(&instruments);
+    Document { header, instruments, binds, patterns, timeline }
 }
 
 fn arb_document() -> impl Strategy<Value = Document> {
@@ -495,6 +607,19 @@ fn first_lane_group(d: &mut Document) -> Option<&mut LaneItem> {
     })
 }
 
+fn auto_lanes_mut(d: &mut Document) -> impl Iterator<Item = &mut AutoLane> {
+    let pat = d.patterns.iter_mut().flat_map(|p| p.autos.iter_mut());
+    let dir = d
+        .timeline
+        .iter_mut()
+        .filter_map(|i| match i {
+            TimelineItem::Direct(x) => Some(x.autos.iter_mut()),
+            _ => None,
+        })
+        .flatten();
+    pat.chain(dir)
+}
+
 fn first_note_pitch(d: &mut Document) -> Option<&mut u8> {
     bodies_mut(d).find_map(|b| match b {
         PatternBody::Melodic(bars) => {
@@ -522,7 +647,7 @@ fn first_tuplet_span(d: &mut Document) -> Option<&mut MusicalTime> {
 /// Apply hostile mutation `which`, walking forward past inapplicable
 /// ones (mutation 0 always applies). Returns the mutation's name.
 fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 27;
+    const N: u32 = 32;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -657,6 +782,30 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
                         }
                     })
                     .is_some()
+            }),
+            27 => ("unbound automation lane", {
+                auto_lanes_mut(d).next().map(|l| l.name = "zzz".into()).is_some()
+            }),
+            28 => ("off-decimal automation value", {
+                auto_lanes_mut(d)
+                    .find_map(|l| l.keys.first_mut())
+                    .map(|k| k.value = 0.123456)
+                    .is_some()
+            }),
+            29 => ("malformed exp easing", {
+                auto_lanes_mut(d)
+                    .find_map(|l| l.keys.first_mut())
+                    .map(|k| k.ease = Ease::Exp(0.0))
+                    .is_some()
+            }),
+            30 => ("automation keyframe past the pattern", {
+                auto_lanes_mut(d)
+                    .find_map(|l| l.keys.first_mut())
+                    .map(|k| k.at = MusicalTime(i64::MAX))
+                    .is_some()
+            }),
+            31 => ("duplicate bind in one scope", {
+                d.binds.first().cloned().map(|b| d.binds.push(b)).is_some()
             }),
             _ => unreachable!(),
         };
@@ -865,6 +1014,9 @@ proptest! {
             prop_assert_eq!(a.program, b.program);
             prop_assert_eq!(a.is_drums, b.is_drums);
             prop_assert_eq!(&a.notes, &b.notes, "track {} drifted:\n{}", &a.name, &text);
+            // Automation must survive the hop too: same targets, keyframes,
+            // positions (fractional included), values and easings.
+            prop_assert_eq!(&a.autos, &b.autos, "track {} automation drifted:\n{}", &a.name, &text);
         }
     }
 }

@@ -58,9 +58,27 @@ fn band_song(key_name: Option<&str>) -> QSong {
         swing: None,
         n_bars: 4,
         tracks: vec![
-            QTrack { name: "piano".into(), program: 0, is_drums: false, notes: piano },
-            QTrack { name: "drums".into(), program: 0, is_drums: true, notes: drums },
-            QTrack { name: "lead".into(), program: 81, is_drums: false, notes: melody },
+            QTrack {
+                autos: Vec::new(),
+                name: "piano".into(),
+                program: 0,
+                is_drums: false,
+                notes: piano,
+            },
+            QTrack {
+                autos: Vec::new(),
+                name: "drums".into(),
+                program: 0,
+                is_drums: true,
+                notes: drums,
+            },
+            QTrack {
+                autos: Vec::new(),
+                name: "lead".into(),
+                program: 81,
+                is_drums: false,
+                notes: melody,
+            },
         ],
     }
 }
@@ -142,7 +160,13 @@ fn key_detection_finds_am_and_eb() {
         key: None,
         swing: None,
         n_bars: 1,
-        tracks: vec![QTrack { name: "p".into(), program: 0, is_drums: false, notes }],
+        tracks: vec![QTrack {
+            autos: Vec::new(),
+            name: "p".into(),
+            program: 0,
+            is_drums: false,
+            notes,
+        }],
     };
     let midi = render::render(&q);
     let song = ingest::ingest_midi(&midi, "flat").unwrap();
@@ -213,7 +237,13 @@ fn drum_variants_emit_as_lane_diffs() {
         key: None,
         swing: None,
         n_bars: 2,
-        tracks: vec![QTrack { name: "drums".into(), program: 0, is_drums: true, notes: drums }],
+        tracks: vec![QTrack {
+            autos: Vec::new(),
+            name: "drums".into(),
+            program: 0,
+            is_drums: true,
+            notes: drums,
+        }],
     };
     let text = emit::emit(&q);
     assert!(text.contains("drums ~P1"), "variant header:\n{text}");
@@ -252,7 +282,13 @@ fn melodic_kinship_is_informational() {
         key: None,
         swing: None,
         n_bars: 2,
-        tracks: vec![QTrack { name: "p".into(), program: 0, is_drums: false, notes }],
+        tracks: vec![QTrack {
+            autos: Vec::new(),
+            name: "p".into(),
+            program: 0,
+            is_drums: false,
+            notes,
+        }],
     };
     let text = emit::emit(&q);
     assert!(text.contains("p ~P1 |"), "kinship marker:\n{text}");
@@ -274,6 +310,7 @@ fn dynamics_emit_and_roundtrip() {
         n_bars: 2,
         tracks: vec![
             QTrack {
+                autos: Vec::new(),
                 name: "lead".into(),
                 program: 81,
                 is_drums: false,
@@ -289,6 +326,7 @@ fn dynamics_emit_and_roundtrip() {
                 ],
             },
             QTrack {
+                autos: Vec::new(),
                 name: "drums".into(),
                 program: 0,
                 is_drums: true,
