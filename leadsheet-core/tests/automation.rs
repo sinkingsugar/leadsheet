@@ -121,7 +121,7 @@ fn controllers(midi: &[u8], cc: u8) -> Vec<(u32, u8)> {
 
 /// The value in effect at `tick` for a `(tick, value)` step series.
 fn active_at(series: &[(u32, u8)], tick: u32) -> Option<u8> {
-    series.iter().filter(|(t, _)| *t <= tick).next_back().map(|(_, v)| *v)
+    series.iter().rfind(|(t, _)| *t <= tick).map(|(_, v)| *v)
 }
 
 // ---------------------------------------------------------------------------
