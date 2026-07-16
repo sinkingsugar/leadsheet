@@ -697,6 +697,7 @@ pub fn from_qsong(q: &QSong) -> Document {
                 kin,
                 body,
                 autos: Vec::new(),
+                comments: Vec::new(),
             }
         })
         .collect();
@@ -709,6 +710,7 @@ pub fn from_qsong(q: &QSong) -> Document {
                 label: labels.get(&i).cloned(),
                 stack: row.stack.clone(),
                 reps: row.reps,
+                comments: Vec::new(),
             })
         })
         .collect();
@@ -737,6 +739,22 @@ pub fn from_qsong(q: &QSong) -> Document {
         binds: Vec::new(),
         patterns,
         timeline,
+        header_comments: Vec::new(),
+        instruments_comments: Vec::new(),
+        trailing_comments: Vec::new(),
+    }
+}
+
+/// Emit comment lines (`// text`, own line, column 0) above their
+/// construct. The parser trims and re-attaches by position, so this
+/// placement is the canonical one.
+fn emit_comments(out: &mut String, comments: &[String]) {
+    for c in comments {
+        if c.is_empty() {
+            out.push_str("//\n");
+        } else {
+            let _ = writeln!(out, "// {c}");
+        }
     }
 }
 
@@ -754,6 +772,7 @@ pub fn from_qsong(q: &QSong) -> Document {
 pub fn emit_document(d: &Document) -> String {
     let flats = d.header.key.map(|k| k.use_flats()).unwrap_or(false);
     let mut out = String::new();
+    emit_comments(&mut out, &d.header_comments);
     let _ = write!(
         out,
         "song: {}  tempo: {:.2}  meter: {}/{}",
@@ -773,6 +792,7 @@ pub fn emit_document(d: &Document) -> String {
         }
     }
     out.push_str("  grid: 1/16\n");
+    emit_comments(&mut out, &d.instruments_comments);
     if d.instruments.is_empty() {
         out.push_str("instruments:\n");
     } else {
@@ -792,6 +812,7 @@ pub fn emit_document(d: &Document) -> String {
         let mut binds: Vec<&Bind> = d.binds.iter().collect();
         binds.sort_by_key(|b| bind_key(b));
         for b in binds {
+            emit_comments(&mut out, &b.comments);
             let _ = writeln!(
                 out,
                 "bind {} = {}{}",
@@ -823,6 +844,7 @@ pub fn emit_document(d: &Document) -> String {
             .max()
             .unwrap_or(0);
         for p in &d.patterns {
+            emit_comments(&mut out, &p.comments);
             match &p.body {
                 PatternBody::Drums(db) => match db.variant_base {
                     Some(base) => {
@@ -886,6 +908,7 @@ pub fn emit_document(d: &Document) -> String {
                     out.push_str("arrangement:\n");
                     in_rows = true;
                 }
+                emit_comments(&mut out, &row.comments);
                 let stack = if row.stack.is_empty() {
                     "z".to_string()
                 } else {
@@ -907,10 +930,12 @@ pub fn emit_document(d: &Document) -> String {
             }
         }
     }
+    emit_comments(&mut out, &d.trailing_comments);
     out
 }
 
 fn emit_direct(out: &mut String, d: &Document, di: &DirectItem, flats: bool) {
+    emit_comments(out, &di.comments);
     let name = &d.instruments[di.track].name;
     let dynamic = dyn_suffix(di.base_vel);
     let meter = meter_suffix(di.meter.filter(|m| *m != d.header.meter));
@@ -1006,6 +1031,7 @@ fn auto_lane_text(lane: &AutoLane) -> String {
 /// Emit a pattern/direct's automation lanes, indented one per line.
 fn emit_autos(out: &mut String, autos: &[AutoLane]) {
     for lane in autos {
+        emit_comments(out, &lane.comments);
         let _ = writeln!(out, "  {}", auto_lane_text(lane));
     }
 }

@@ -15,7 +15,9 @@
 //! Document. `[z]` is a silent bar.
 //!
 //! Tolerant of whitespace and of anything after the closing `|`
-//! (annotation comments — dropped, canonical form is the product). Strict
+//! (dropped, canonical form is the product). Own-line `//` comments are
+//! durable annotations: they attach to the next construct and survive
+//! the emit loop (the contract lives on [`crate::doc::Document`]). Strict
 //! about what matters: unknown instruments, patterns or header fields,
 //! bad tokens, and voices that don't sum to a full bar are hard errors
 //! carrying a structured [`Diagnostic`] (code, line/col, message,
@@ -468,6 +470,8 @@ struct DrumBlock {
     /// Variant base: lanes not listed here are inherited from it.
     variant_base: Option<usize>,
     lanes: Vec<(u8, Vec<LaneItem>)>,
+    /// Comments above the block opener, held until flush.
+    comments: Vec<String>,
 }
 
 const TICK_CAP_HINT: &str =
@@ -541,7 +545,13 @@ fn parse_bind(spec: &str, track_index: &HashMap<String, usize>) -> Result<Bind, 
         None => (rhs, None),
         Some((tgt, dom)) => (tgt.trim(), Some(parse_domain(dom, rhs)?)),
     };
-    Ok(Bind { scope, name: name.to_string(), target: parse_target(target_str)?, domain })
+    Ok(Bind {
+        scope,
+        name: name.to_string(),
+        target: parse_target(target_str)?,
+        domain,
+        comments: Vec::new(),
+    })
 }
 
 /// A `min..max]` value-domain body (the opening `[` already stripped):
@@ -787,7 +797,7 @@ fn parse_auto_lane(rest: &str) -> Result<AutoLane, Raw> {
     if let Some(last) = keys.last_mut() {
         last.ease = Ease::Lin;
     }
-    Ok(AutoLane { name: name.to_string(), keys })
+    Ok(AutoLane { name: name.to_string(), keys, comments: Vec::new() })
 }
 
 /// Where the next `@` automation lane attaches (index into `patterns` or
@@ -812,6 +822,11 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
     let mut pending: Option<DrumBlock> = None;
     let mut last_def: Option<AutoDef> = None; // where the next @ lane attaches
     let mut next_bar = 0u32; // arrangement cursor (for the MAX_BARS cap)
+    // Comment lines buffered until the next construct claims them (the
+    // attachment rule in [`crate::doc::Document`]'s comment contract).
+    let mut comments: Vec<String> = Vec::new();
+    let mut header_comments: Vec<String> = Vec::new();
+    let mut instruments_comments: Vec<String> = Vec::new();
 
     let known_patterns = |pattern_index: &HashMap<usize, usize>| -> String {
         let mut ids: Vec<usize> = pattern_index.keys().copied().collect();
@@ -882,6 +897,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     kin: None,
                     body,
                     autos: Vec::new(),
+                    comments: block.comments,
                 });
             }
             BlockTarget::Direct(bar) => {
@@ -899,6 +915,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     meter: block.meter,
                     body,
                     autos: Vec::new(),
+                    comments: block.comments,
                 }));
             }
         }
@@ -909,10 +926,14 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         let lineno = lineno + 1;
         let err = |r: Raw| diag(lineno, raw_line, r);
         let line = raw_line.trim();
-        if line.is_empty() || line.starts_with("//") {
-            // Blank lines and `//` comments carry no music. Comments are an
-            // authoring courtesy — the canonical form never emits them, so
-            // they are dropped here (before any block/lane handling).
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("//") {
+            // Comments carry no music but are durable annotations: they
+            // buffer here (before any block/lane handling — a comment
+            // never closes a drum block) and attach to the next construct.
+            comments.push(rest.trim().to_string());
             continue;
         }
 
@@ -965,7 +986,8 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         }
 
         if let Some(rest) = line.strip_prefix('@') {
-            let lane = parse_auto_lane(rest).map_err(err)?;
+            let mut lane = parse_auto_lane(rest).map_err(err)?;
+            lane.comments = std::mem::take(&mut comments);
             match last_def {
                 Some(AutoDef::Pattern(i)) => patterns[i].autos.push(lane),
                 Some(AutoDef::Direct(i)) => {
@@ -989,7 +1011,8 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         if let Some(after) = line.strip_prefix("bind")
             && after.starts_with(|c: char| c.is_whitespace())
         {
-            let b = parse_bind(after.trim(), &track_index).map_err(err)?;
+            let mut b = parse_bind(after.trim(), &track_index).map_err(err)?;
+            b.comments = std::mem::take(&mut comments);
             if binds.iter().any(|x| x.name == b.name && x.scope == b.scope) {
                 return Err(err(raw(
                     "duplicate-bind",
@@ -1003,6 +1026,11 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         if line.starts_with("song:") || line.starts_with("instruments:") {
             parse_header_line(line, &mut header, &mut instruments, &mut track_index)
                 .map_err(err)?;
+            if line.starts_with("song:") {
+                header_comments.append(&mut comments);
+            } else {
+                instruments_comments.append(&mut comments);
+            }
             continue;
         }
         if line == "arrangement:" {
@@ -1053,7 +1081,12 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                 .hint(TICK_CAP_HINT)));
             }
             next_bar += reps * unit;
-            timeline.push(TimelineItem::Row(Row { label, stack: ids, reps }));
+            timeline.push(TimelineItem::Row(Row {
+                label,
+                stack: ids,
+                reps,
+                comments: std::mem::take(&mut comments),
+            }));
             last_def = None; // a row separates automation from the patterns above
             continue;
         }
@@ -1109,6 +1142,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                 meter,
                 variant_base,
                 lanes: Vec::new(),
+                comments: std::mem::take(&mut comments),
             });
             continue;
         }
@@ -1153,6 +1187,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                 .map_err(err)?;
             PatternBody::Melodic(bars)
         };
+        let line_comments = std::mem::take(&mut comments);
         match parse_head(head).map_err(err)? {
             BlockTarget::Pattern(id) => {
                 if pattern_index.contains_key(&id) {
@@ -1169,6 +1204,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     kin,
                     body,
                     autos: Vec::new(),
+                    comments: line_comments,
                 });
                 last_def = Some(AutoDef::Pattern(patterns.len() - 1));
             }
@@ -1189,6 +1225,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
                     meter,
                     body,
                     autos: Vec::new(),
+                    comments: line_comments,
                 }));
                 last_def = Some(AutoDef::Direct(timeline.len() - 1));
             }
@@ -1216,7 +1253,16 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         )
         .map_err(|r| diag(opened, "", r))?;
     }
-    let doc = Document { header, instruments, binds, patterns, timeline };
+    let doc = Document {
+        header,
+        instruments,
+        binds,
+        patterns,
+        timeline,
+        header_comments,
+        instruments_comments,
+        trailing_comments: comments,
+    };
     // Meter overrides interact globally (stack agreement, bar claims,
     // the tick domain under mixed meters) — one authoritative pass,
     // shared with validate()/resolve(), so a parsed Document keeps the

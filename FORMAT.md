@@ -51,9 +51,17 @@ arrangement:
 
 `song:`, `instruments:`, and `bind` (see [Automation](#automation)) are
 the **directives** — bare `word:` / `word ` lines that configure the
-song. A line beginning with `//` is a **comment**: dropped on parse and
-never emitted, so it does not survive a round-trip (the canonical form is
-the product). Everything else is music.
+song. A line beginning with `//` is a **comment**: a durable annotation.
+Comments never affect the music, but they survive formatting — each one
+attaches to the next thing in the file (a directive, a pattern, an
+automation lane, an arrangement row, a direct bar) and is re-emitted on
+its own line immediately above it; comments after the last construct
+stay at the end. Use them as margin notes: intent, reminders,
+observations for the next editing pass. Two caveats: a comment written
+between drum lanes floats below the block on the first reformat (lanes
+can't carry comments), and comments only live in the text — rendering
+to MIDI discards them, and `leadsheet fmt --strip-comments` removes
+them all deliberately. Everything else is music.
 
 ## Time
 

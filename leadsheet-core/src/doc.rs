@@ -82,6 +82,9 @@ pub struct Bind {
     pub name: String,
     pub target: Target,
     pub domain: Option<(f64, f64)>,
+    /// `//` comment lines written above this bind (see [`Document`] on
+    /// comment attachment).
+    pub comments: Vec<String>,
 }
 
 impl Bind {
@@ -113,6 +116,8 @@ pub struct Keyframe {
 pub struct AutoLane {
     pub name: String,
     pub keys: Vec<Keyframe>,
+    /// `//` comment lines written above this lane.
+    pub comments: Vec<String>,
 }
 
 /// One melodic bar: `&`-separated voices of tokens.
@@ -201,6 +206,8 @@ pub struct PatternDef {
     pub body: PatternBody,
     /// Automation lanes attached to this pattern (`@name { ... }`).
     pub autos: Vec<AutoLane>,
+    /// `//` comment lines written above this pattern.
+    pub comments: Vec<String>,
 }
 
 /// One arrangement row: a bar-stack repeated `reps` times.
@@ -211,6 +218,8 @@ pub struct Row {
     pub label: Option<String>,
     pub stack: Vec<usize>,
     pub reps: u32,
+    /// `//` comment lines written above this row.
+    pub comments: Vec<String>,
 }
 
 /// A `b<n>` direct placement (hand-authoring shortcut).
@@ -225,6 +234,8 @@ pub struct DirectItem {
     pub body: PatternBody,
     /// Automation lanes attached to this direct bar (`@name { ... }`).
     pub autos: Vec<AutoLane>,
+    /// `//` comment lines written above this direct bar.
+    pub comments: Vec<String>,
 }
 
 /// Rows and direct bars, in source order — the order is semantic: a tie
@@ -235,6 +246,22 @@ pub enum TimelineItem {
     Direct(DirectItem),
 }
 
+/// # Comments
+///
+/// `//` comment lines are durable annotations — the model's margin
+/// notes — and survive the parse → emit loop. Attachment rule: an
+/// own-line comment binds to the **next construct** in the file (the
+/// `song:` line, the `instruments:` line, a bind, a pattern, an
+/// automation lane, a row, or a direct bar); comments after the last
+/// construct are [`Document::trailing_comments`]. Emission places each
+/// comment on its own `// text` line immediately above its construct,
+/// so a comment written *inside* a drum block (between lanes) migrates
+/// below the block on the first `fmt` — deterministic, hence canonical.
+/// Stored text is trimmed with the `//` stripped; it must stay
+/// trim-stable and newline-free ([`Document::validate`] enforces this).
+/// Comments never reach [`QSong`] — `resolve`, `render`, and `diff` are
+/// blind to them. `Document::strip_comments` (and `fmt
+/// --strip-comments`) discards them all.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Document {
     pub header: Header,
@@ -245,6 +272,12 @@ pub struct Document {
     pub patterns: Vec<PatternDef>,
     /// Arrangement rows and direct bars, interleaved as written.
     pub timeline: Vec<TimelineItem>,
+    /// Comments above the `song:` line (the file preamble).
+    pub header_comments: Vec<String>,
+    /// Comments above the `instruments:` line.
+    pub instruments_comments: Vec<String>,
+    /// Comments after the last construct in the file.
+    pub trailing_comments: Vec<String>,
 }
 
 impl Document {
@@ -264,6 +297,35 @@ impl Document {
             TimelineItem::Direct(d) => Some(d),
             _ => None,
         })
+    }
+
+    /// Discard every comment (the `fmt --strip-comments` operation).
+    /// Ephemerality is an operation, not a spelling: there is one
+    /// comment form and it is durable; a clean file is one strip away.
+    pub fn strip_comments(&mut self) {
+        self.header_comments.clear();
+        self.instruments_comments.clear();
+        self.trailing_comments.clear();
+        for b in &mut self.binds {
+            b.comments.clear();
+        }
+        for p in &mut self.patterns {
+            p.comments.clear();
+            for a in &mut p.autos {
+                a.comments.clear();
+            }
+        }
+        for item in &mut self.timeline {
+            match item {
+                TimelineItem::Row(r) => r.comments.clear(),
+                TimelineItem::Direct(d) => {
+                    d.comments.clear();
+                    for a in &mut d.autos {
+                        a.comments.clear();
+                    }
+                }
+            }
+        }
     }
 
     /// Structural preflight for host-built Documents (parse_document
@@ -287,6 +349,9 @@ impl Document {
                 self.header.bpm, self.header.bpm
             )));
         }
+        validate_comments(&self.header_comments, "header")?;
+        validate_comments(&self.instruments_comments, "instruments")?;
+        validate_comments(&self.trailing_comments, "trailing")?;
         let cpb = self.header.cells_per_bar();
         let bar = self.header.bar_ticks();
         let mut names = std::collections::HashSet::new();
@@ -304,6 +369,7 @@ impl Document {
         }
         let mut bind_keys = std::collections::HashSet::new();
         for b in &self.binds {
+            validate_comments(&b.comments, &format!("bind {}", b.name))?;
             if !valid_name(&b.name) {
                 return Err(doc_err(format!("bind name {:?} would break emission", b.name)));
             }
@@ -330,6 +396,7 @@ impl Document {
         }
         let mut ids = std::collections::HashSet::new();
         for (idx, p) in self.patterns.iter().enumerate() {
+            validate_comments(&p.comments, &format!("P{}", p.id))?;
             if !ids.insert(p.id) {
                 return Err(doc_err(format!("duplicate pattern P{}", p.id)));
             }
@@ -382,6 +449,7 @@ impl Document {
         for item in &self.timeline {
             match item {
                 TimelineItem::Row(row) => {
+                    validate_comments(&row.comments, "row")?;
                     if row.reps == 0 {
                         return Err(doc_err("row repeats must be >= 1".into()));
                     }
@@ -419,6 +487,7 @@ impl Document {
                     total_bars += row.reps as u64 * unit as u64;
                 }
                 TimelineItem::Direct(d) => {
+                    validate_comments(&d.comments, &format!("b{}", d.bar))?;
                     if d.bar == 0 {
                         return Err(doc_err("direct bars start at 1".into()));
                     }
@@ -657,6 +726,7 @@ fn validate_autos(
 ) -> Result<(), Error> {
     let span = MusicalTime::from_sixteenths(total_cells);
     for lane in autos {
+        validate_comments(&lane.comments, &format!("{who}: @{}", lane.name))?;
         if Bind::resolve(binds, &lane.name, track).is_none() {
             return Err(doc_err(format!(
                 "{who}: @{} is not bound (add `bind {} = ...`)",
@@ -1035,6 +1105,25 @@ pub(crate) fn bpm_is_canonical(bpm: f64) -> bool {
 /// boundaries and the parser so the three can't drift.
 pub(crate) fn valid_name(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Comment text that survives its own emission: the emitted line is
+/// `// {text}`, whose reparse trims both ends — so stored text must be
+/// trim-stable and single-line. Shared with the parser (which stores
+/// trimmed text, satisfying this by construction).
+pub(crate) fn valid_comment(s: &str) -> bool {
+    !s.contains('\n') && s.trim() == s
+}
+
+fn validate_comments(comments: &[String], who: &str) -> Result<(), Error> {
+    for c in comments {
+        if !valid_comment(c) {
+            return Err(doc_err(format!(
+                "{who}: comment {c:?} would break emission (one line, no surrounding whitespace)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// `@dyn` marks only spell the six dynamic buckets, so an off-bucket base

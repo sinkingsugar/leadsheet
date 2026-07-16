@@ -54,13 +54,15 @@ fn author_structure_survives_the_canonical_loop() {
     }
 }
 
-/// `//` line comments are an authoring courtesy: they parse away anywhere
-/// (even indented inside the arrangement block) and the canonical form
-/// never emits them, so a commented file is byte-identical to the clean
-/// one once it round-trips.
+/// `//` line comments are durable annotations — an LLM's margin notes.
+/// Each attaches to the next construct (even from inside the indented
+/// arrangement block), survives the canonical loop byte-for-byte, and
+/// `strip_comments` — ephemerality as an operation, not a spelling —
+/// recovers the clean file exactly.
 #[test]
-fn line_comments_are_dropped_and_never_emitted() {
+fn line_comments_attach_and_survive_the_canonical_loop() {
     let commented = "\
+// title card, above everything
 song: c  tempo: 100.00  meter: 4/4  grid: 1/16
 // a note to self, before the instruments
 instruments: piano:0
@@ -71,6 +73,7 @@ P1 piano | c4 e4 g4 c4 |
 arrangement:
   // and a comment between rows
   A: [P1] x2
+// trailing thought
 ";
     let clean = "\
 song: c  tempo: 100.00  meter: 4/4  grid: 1/16
@@ -82,9 +85,55 @@ arrangement:
   A: [P1] x2
 ";
     let dc = doc(commented);
+    assert_eq!(dc.header_comments, ["title card, above everything"]);
+    assert_eq!(dc.instruments_comments, ["a note to self, before the instruments"]);
+    assert_eq!(dc.pattern(1).unwrap().comments, ["the verse riff"]);
+    let row_comments: Vec<_> = dc.rows().flat_map(|r| r.comments.clone()).collect();
+    assert_eq!(row_comments, ["and a comment between rows"]);
+    assert_eq!(dc.trailing_comments, ["trailing thought"]);
+    // Canonical: emission is a parse fixpoint with comments aboard.
     let out = emit::emit_document(&dc);
-    assert!(!out.contains("//"), "comments must not survive emission:\n{out}");
-    assert_eq!(dc, doc(clean), "a commented file parses to the same Document as the clean one");
+    assert_eq!(doc(&out), dc, "comments re-attach to the same constructs");
+    assert_eq!(emit::emit_document(&doc(&out)), out, "emission is a fixpoint");
+    // Comments never reach the compiled layer.
+    let (qc, qq) = (dc.resolve().unwrap(), doc(clean).resolve().unwrap());
+    for (a, b) in qc.tracks.iter().zip(&qq.tracks) {
+        assert_eq!(a.notes, b.notes, "commented and clean files compile to the same music");
+    }
+    // strip_comments recovers the clean file exactly.
+    let mut stripped = dc.clone();
+    stripped.strip_comments();
+    assert_eq!(emit::emit_document(&stripped), clean);
+}
+
+/// Comment attachment normalizes: a comment written between drum lanes
+/// belongs to no lane — it floats to the next construct on the first
+/// canonical loop, then stays put. Sigil-looking comment text (`// P9
+/// | q c4 |`) stays inert annotation.
+#[test]
+fn comment_attachment_normalizes_and_stays_inert() {
+    let text = "\
+song: c  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: piano:0 drums:kit
+P1 drums
+// between the lanes
+ K  |x...x...x...x...|
+// P9 | q c4 |
+P2 piano@p | c4 e4 g4 c4 |
+// before the sweep
+@vol { 0:20 16:100 }
+bind vol = cc7
+";
+    let d = doc(text);
+    assert!(d.pattern(1).unwrap().comments.is_empty(), "lane comments float past the block");
+    assert_eq!(d.pattern(2).unwrap().comments, ["between the lanes", "P9 | q c4 |"]);
+    assert_eq!(d.pattern(2).unwrap().autos[0].comments, ["before the sweep"]);
+    assert_eq!(d.binds[0].comments, Vec::<String>::new());
+    // No phantom P9 was parsed out of the comment.
+    assert!(d.pattern(9).is_none());
+    let out = emit::emit_document(&d);
+    assert_eq!(doc(&out), d);
+    assert_eq!(emit::emit_document(&doc(&out)), out, "emission is a fixpoint");
 }
 
 /// E6: direct bars overlay the arrangement timeline, and *source order*

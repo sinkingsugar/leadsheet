@@ -346,6 +346,24 @@ impl Bytes {
     }
 }
 
+/// 0–2 comment lines from the valid domain (trim-stable, single-line):
+/// empty, plain words, interior runs of spaces, and sigil-looking texts
+/// (`//`, `[x]`, `P1 |`) that must survive as inert annotation.
+fn gen_comments(seed: u64) -> Vec<String> {
+    const TEXTS: &[&str] = &[
+        "",
+        "note",
+        "a  b",
+        "//",
+        "P1 | q c4 |",
+        "chorus: [P1] x4",
+        "bind a = cc74",
+        "@a { 0:1 }",
+    ];
+    let mut b = Bytes::new(seed ^ 0xC0_FFEE);
+    (0..b.next() % 3).map(|_| TEXTS[b.next() as usize % TEXTS.len()].to_string()).collect()
+}
+
 /// A varied target for an instrument-scoped bind (exercises every kind).
 fn auto_target(i: u8) -> Target {
     match i % 7 {
@@ -370,8 +388,17 @@ fn gen_binds(instruments: &[Instrument]) -> Vec<Bind> {
             name: "a".into(),
             target: Target::Cc(74),
             domain: Some((0.0, 1.0)),
+            comments: Vec::new(),
         },
-        Bind { scope: BindScope::Song, name: "b".into(), target: Target::PitchBend, domain: None },
+        Bind {
+            scope: BindScope::Song,
+            name: "b".into(),
+            target: Target::PitchBend,
+            domain: None,
+            // A commented bind: emission sorts binds, so the comment
+            // must travel with its bind through the fixpoint.
+            comments: vec!["bend rides the solo".into()],
+        },
     ];
     for i in 0..instruments.len().min(3) {
         binds.push(Bind {
@@ -379,12 +406,14 @@ fn gen_binds(instruments: &[Instrument]) -> Vec<Bind> {
             name: "a".into(),
             target: Target::Cc(10 + i as u8),
             domain: None,
+            comments: Vec::new(),
         });
         binds.push(Bind {
             scope: BindScope::Instrument(i),
             name: "c".into(),
             target: auto_target(i as u8),
             domain: if i % 2 == 0 { Some((-2.0, 2.0)) } else { None },
+            comments: gen_comments(i as u64 ^ 0xB1),
         });
     }
     binds
@@ -433,7 +462,11 @@ fn gen_autos(seed: u64, span_cells: u32, allow_c: bool) -> Vec<AutoLane> {
                 ease: if i + 1 == ticks.len() { Ease::Lin } else { gen_ease(b.next()) },
             })
             .collect();
-        lanes.push(AutoLane { name: name.to_string(), keys });
+        lanes.push(AutoLane {
+            name: name.to_string(),
+            keys,
+            comments: gen_comments(seed ^ (lanes.len() as u64) << 3),
+        });
     }
     lanes
 }
@@ -481,6 +514,7 @@ fn build_document(
                 kin,
                 body,
                 autos,
+                comments: gen_comments(*id as u64 ^ 0x9A),
             });
         }
     }
@@ -505,7 +539,12 @@ fn build_document(
                     let nb = n_bars_of(*id);
                     nb == 1 || nb == unit
                 });
-                timeline.push(TimelineItem::Row(Row { label, stack, reps: 1 + (reps % 3) as u32 }));
+                timeline.push(TimelineItem::Row(Row {
+                    label,
+                    stack,
+                    reps: 1 + (reps % 3) as u32,
+                    comments: gen_comments(reps as u64 ^ 0x51),
+                }));
             }
             ItemSeed::Direct { bar, track, vel, variant, body } => {
                 if instruments.is_empty() {
@@ -536,12 +575,23 @@ fn build_document(
                     meter: alt_meter,
                     body,
                     autos,
+                    comments: gen_comments(bar as u64 ^ 0xD1),
                 }));
             }
         }
     }
     let binds = gen_binds(&instruments);
-    Document { header, instruments, binds, patterns, timeline }
+    let n = instruments.len() as u64;
+    Document {
+        header,
+        instruments,
+        binds,
+        patterns,
+        timeline,
+        header_comments: gen_comments(n ^ 0x4A),
+        instruments_comments: gen_comments(n ^ 0x1B),
+        trailing_comments: gen_comments(n ^ 0x7C),
+    }
 }
 
 fn arb_document() -> impl Strategy<Value = Document> {
@@ -659,7 +709,7 @@ fn first_tuplet_span(d: &mut Document) -> Option<&mut MusicalTime> {
 /// Apply hostile mutation `which`, walking forward past inapplicable
 /// ones (mutation 0 always applies). Returns the mutation's name.
 fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
-    const N: u32 = 34;
+    const N: u32 = 36;
     for k in 0..N {
         let (name, applied) = match (which as u32 + k) % N {
             0 => ("key pc out of range", {
@@ -774,6 +824,7 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
                     label: None,
                     stack: Vec::new(),
                     reps: u32::MAX,
+                    comments: Vec::new(),
                 }));
                 true
             }),
@@ -827,6 +878,17 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
                     .find_map(|l| l.keys.first_mut())
                     .map(|k| k.ease = Ease::Bez(2.0, 0.0, 0.5, 1.0))
                     .is_some()
+            }),
+            34 => ("multi-line comment", {
+                // A `\n` inside comment text would emit a second,
+                // uncommented line.
+                d.header_comments.push("a\nb".into());
+                true
+            }),
+            35 => ("untrimmed comment", {
+                // Surrounding whitespace does not survive the reparse trim.
+                d.trailing_comments.push(" x".into());
+                true
             }),
             _ => unreachable!(),
         };

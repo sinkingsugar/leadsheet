@@ -117,7 +117,10 @@ pub fn diff(a: &Document, b: &Document) -> String {
         match (a.timeline.get(i), b.timeline.get(i)) {
             (Some(TimelineItem::Row(x)), Some(TimelineItem::Row(y))) => {
                 row_no += 1;
-                if x != y {
+                // Field-wise, not derived PartialEq: comments are
+                // annotations, and a comment-only edit is not a
+                // semantic difference.
+                if x.label != y.label || x.stack != y.stack || x.reps != y.reps {
                     let _ = writeln!(out, "row {row_no}: {} -> {}", row_text(x), row_text(y));
                 }
             }

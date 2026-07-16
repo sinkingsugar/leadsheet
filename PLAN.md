@@ -230,9 +230,9 @@ calls, no model deps in the crate.
 
 ## Phase 5 — Host enablement
 
-**Status: DONE 2026-07-12** (comment-line emission deliberately not
-done — comments have a syntax since the 2026-07-15 sigil split (`//`),
-but stay dropped and are never emitted, per the Rejected list).
+**Status: DONE 2026-07-12** (comment-line emission arrived later: since
+2026-07-16 `//` comments are durable annotations that survive the
+canonical loop — see the recorded decision under Syntax governance).
 
 - [x] **wasm32 target**: `leadsheet-core` builds on
       `wasm32-unknown-unknown` out of the box; GitHub Actions CI checks
@@ -268,8 +268,17 @@ but stay dropped and are never emitted, per the Rejected list).
   is the compatibility story for now. One-line parser tolerance can be
   added the day it's needed.
 - **Source spans on every AST node**: line/col in diagnostics only.
-- **Comments as first-class AST nodes / whitespace preservation**:
-  canonical form is the product; `fmt` is the answer.
+- **Whitespace preservation**: canonical form is the product; `fmt` is
+  the answer. (Comments left this entry 2026-07-16 — they are now
+  durable annotations on the Document; see the recorded decision under
+  Syntax governance. The evidence that re-argued it: the authoring loop
+  is multi-turn and `fmt` sat inside it, erasing the model's own margin
+  notes between turns.)
+- **A second, ephemeral comment form**: rejected 2026-07-16 with the
+  persistence decision. Mistaken ephemerality is silent data loss (the
+  one forbidden thing) while mistaken persistence is only noise, so a
+  per-line persistence choice defaults wrong; ephemerality is an
+  *operation* (`fmt --strip-comments`), not a spelling.
 - **Inline analysis strings in `.ls`** (`"ii7"` before a tuple): derived
   analysis stays out of source truth (Phase 5 `inspect --harmony`,
   re-derivable per invariant 2). Syntax decision deferred to Gio if ever.
@@ -313,8 +322,22 @@ once — the exact ambiguity the format exists to avoid. The split:
 `song:` / `instruments:` / `bind` become bare directives (joining the
 pre-existing bare `arrangement:`), and `//` becomes the comment. The
 spellings were again delegated to the resident LLM user and join the
-retroactive bake-off above. Comments stay lossy (dropped, never
-emitted) — making annotations survive remains on the Rejected list.
+retroactive bake-off above. (The split originally kept comments lossy;
+the 2026-07-16 decision below overturned that half.)
+
+**Recorded decision (2026-07-16) — durable comments:** Gio blessed the
+scope (comments must survive; "LLMs need comments"). No new spelling —
+`//` is unchanged; what changed is *persistence*: comments are now
+first-class on the Document (attached to the next construct, re-emitted
+above it, canonical through the loop, validated trim-stable and
+single-line, invisible to resolve/render/diff). Rationale: the format's
+user is an LLM in a multi-turn loop with `fmt` inside it — dropping
+comments erased the model's own margin notes between turns, starving
+the next turn's context. A second *ephemeral* comment form was
+considered and rejected (see Rejected); `fmt --strip-comments` is the
+ephemerality escape hatch. The bake-off should probe comment handling
+(do models leave, respect, and never misparse annotations?) along with
+the rest.
 
 **Recorded narrowings (review triage rounds 2–4; BLESSED by Gio
 2026-07-13):** four retroactive *format narrowings* shipped as

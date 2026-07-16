@@ -107,6 +107,11 @@ enum Cmd {
         /// Output path (default: rewrite in place; `-` for stdout).
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Discard all `//` comments. Comments are durable annotations
+        /// (they survive fmt); ephemerality is this operation, not a
+        /// second comment spelling.
+        #[arg(long)]
+        strip_comments: bool,
     },
 }
 
@@ -327,9 +332,12 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
-        Cmd::Fmt { input, output } => {
+        Cmd::Fmt { input, output, strip_comments } => {
             let text = std::fs::read_to_string(&input)?;
-            let document = leadsheet_core::parse::parse_document(&text)?;
+            let mut document = leadsheet_core::parse::parse_document(&text)?;
+            if strip_comments {
+                document.strip_comments();
+            }
             let qsong = document.resolve()?;
             let canonical = leadsheet_core::emit::emit_document(&document);
             let out_path = output.unwrap_or_else(|| input.clone());
