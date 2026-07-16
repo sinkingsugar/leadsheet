@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>leadsheet — tweet card</title>
+<style>
+  /* 1200x675 = Twitter 16:9 card. Print/export at this size. */
+  :root {
+    --navy:    #0d1b2a;
+    --navy-2:  #13223a;
+    --panel:   #0a1522;
+    --copper:  #d98e4a;
+    --copper-2:#b06f33;
+    --ink:     #e8e3da;
+    --dim:     #7d8ba1;
+    --green:   #7fc97f;
+    --blue:    #6fa8dc;
+    --pink:    #d47fa6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { background: #222; }
+  .card {
+    width: 1200px; height: 675px;
+    margin: 24px auto;
+    background: linear-gradient(135deg, var(--navy) 0%, var(--navy-2) 100%);
+    color: var(--ink);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    display: flex;
+    overflow: hidden;
+    position: relative;
+    border-radius: 12px;
+  }
+  /* faint quantization grid, logo #4 callback */
+  .card::before {
+    content: "";
+    position: absolute; inset: 0;
+    background-image:
+      repeating-linear-gradient(90deg, rgba(217,142,74,0.05) 0 1px, transparent 1px 60px),
+      repeating-linear-gradient(0deg,  rgba(217,142,74,0.04) 0 1px, transparent 1px 60px);
+    pointer-events: none;
+  }
+
+  /* ---- left: the source ---- */
+  .code-pane {
+    width: 700px;
+    padding: 40px 28px 40px 40px;
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .filename {
+    font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+    font-size: 15px; color: var(--dim); margin-bottom: 12px;
+    letter-spacing: 0.5px;
+  }
+  .filename b { color: var(--copper); font-weight: 600; }
+  pre {
+    background: var(--panel);
+    border: 1px solid rgba(217,142,74,0.25);
+    border-left: 4px solid var(--copper);
+    border-radius: 8px;
+    padding: 20px 22px;
+    font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+    font-size: 13.5px;
+    line-height: 1.6;
+    color: var(--ink);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+  }
+  .cm  { color: var(--dim); font-style: italic; } /* // comments — durable margin notes */
+  .dir { color: var(--copper); font-weight: 600; } /* directives: song / instruments / bind */
+  .fld { color: var(--dim); }        /* header field labels (tempo: meter: ...) */
+  .pat { color: var(--copper); font-weight: 600; }  /* P1..P4, arrangement */
+  .ins { color: var(--blue); }       /* instrument names */
+  .dyn { color: var(--pink); }       /* @mf * > and @lane automation */
+  .drm { color: var(--green); }      /* drum lane rows */
+  .bar { color: var(--dim); }        /* | pipes        */
+
+  /* ---- right: the pitch ---- */
+  .pitch-pane {
+    flex: 1;
+    padding: 52px 48px 44px 24px;
+    display: flex; flex-direction: column;
+    position: relative; z-index: 1;
+  }
+  .wordmark {
+    font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+    font-size: 40px; font-weight: 700; letter-spacing: -1px;
+    color: var(--ink);
+  }
+  .wordmark .dot { color: var(--copper); }
+  .tagline {
+    margin-top: 10px;
+    font-size: 21px; line-height: 1.45;
+    color: var(--ink);
+    font-weight: 300;
+  }
+  .tagline b { color: var(--copper); font-weight: 600; }
+
+  .loop {
+    margin: 30px 0 0;
+    font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+    font-size: 15.5px; line-height: 1.5;
+    color: var(--dim);
+  }
+  .loop .hot { color: var(--copper); }
+  .loop .you { color: var(--ink); }
+
+  .claims { margin-top: 30px; list-style: none; }
+  .claims li {
+    font-size: 17px; line-height: 1.5;
+    padding-left: 26px; position: relative;
+    margin-bottom: 12px; color: var(--ink);
+  }
+  .claims li::before {
+    content: "▸"; position: absolute; left: 0;
+    color: var(--copper); font-size: 16px;
+  }
+  .claims code {
+    font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+    font-size: 15px; color: var(--copper);
+    background: rgba(217,142,74,0.10);
+    padding: 1px 6px; border-radius: 4px;
+  }
+
+  .footer {
+    margin-top: auto;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .badge {
+    font-family: "SF Mono", "Fira Code", Menlo, Consolas, monospace;
+    font-size: 15px; font-weight: 700;
+    color: var(--navy);
+    background: linear-gradient(180deg, var(--copper) 0%, var(--copper-2) 100%);
+    padding: 8px 16px; border-radius: 6px;
+    letter-spacing: 0.3px;
+  }
+  .motto {
+    font-size: 16px; color: var(--dim); font-style: italic;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+
+  <div class="code-pane">
+    <div class="filename"><b>demo.ls</b> — a complete, renderable song</div>
+    <pre><span class="dir">song:</span> demo  <span class="fld">tempo:</span> 96.00  <span class="fld">meter:</span> 4/4  <span class="fld">key:</span> Am  <span class="fld">swing:</span> 56%  <span class="fld">grid:</span> 1/16
+<span class="dir">instruments:</span> <span class="ins">bass</span>:33 <span class="ins">drums</span>:kit <span class="ins">piano</span>:0 <span class="ins">lead</span>:81
+<span class="dir">bind</span> <span class="dyn">cut</span> = cc74 [0..1]
+
+<span class="pat">P1</span> <span class="ins">bass</span>   <span class="bar">|</span> A,,4 A,,4 G,,4 E,,4 <span class="bar">|</span>
+<span class="cm">// margin note: hats carry it, open up into A</span>
+<span class="pat">P2</span> <span class="ins">drums</span><span class="dyn">@mf</span>
+  <span class="ins">K</span> <span class="bar">|</span><span class="drm">X... .... x.x. ....</span><span class="bar">|</span>
+  <span class="ins">S</span> <span class="bar">|</span><span class="drm">.... X... .... X..o</span><span class="bar">|</span>
+  <span class="ins">h</span> <span class="bar">|</span><span class="drm">x.o. x.o. x.o. x.o.</span><span class="bar">|</span>
+<span class="pat">P3</span> <span class="ins">piano</span><span class="dyn">*</span> <span class="bar">|</span> Am . F G7 <span class="bar">|</span>
+<span class="pat">P4</span> <span class="ins">lead</span>   <span class="bar">|</span> e2 c2 <span class="dyn">&gt;</span>d2 B2 c4 A4 <span class="bar">|</span>
+  <span class="dyn">@cut</span> { 0:0.2 <span class="drm">smooth</span> 16:0.9 }
+
+<span class="pat">arrangement:</span>
+  intro: [P1+P2] x2
+  A: [P1+P2+P3+P4] x4</pre>
+  </div>
+
+  <div class="pitch-pane">
+    <div class="wordmark">leadsheet<span class="dot">.</span></div>
+    <div class="tagline">Source code for music, designed for <b>language-model agents</b>. A lead sheet, not a zip file.</div>
+
+    <div class="loop">
+audio → .mid → <span class="hot">compress</span> → .ls text<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="you">LLM reads · edits · repairs</span><br>
+.ls → <span class="hot">check · fmt · render</span> → .mid → ears
+    </div>
+
+    <ul class="claims">
+      <li>Canonical: <code>emit(parse(emit(q))) == emit(q)</code>, byte for byte</li>
+      <li>Fuzzed, panic-free parser — diagnostics double as repair prompts</li>
+      <li>Unmodified frontier LLMs. No fine-tuning. Just the spec.</li>
+      <li>Syntax governed by measured model performance, not taste</li>
+    </ul>
+
+    <div class="footer">
+      <div class="badge">ROUNDTRIP F1&nbsp;&nbsp;0.9997</div>
+      <div class="motto">Guarantees, not vibes.</div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>
