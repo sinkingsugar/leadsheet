@@ -14,8 +14,8 @@ import {
 import { lsLanguage, lsHighlight, lsTheme } from "./ls-mode.js";
 import { Player } from "./player.js";
 
-const DEFAULT_LS = `# song: demo  tempo: 96.00  meter: 4/4  key: Am  grid: 1/16
-# instruments: bass:33 drums:kit piano:0 lead:81
+const DEFAULT_LS = `song: demo  tempo: 96.00  meter: 4/4  key: Am  grid: 1/16
+instruments: bass:33 drums:kit piano:0 lead:81
 
 P1 bass   | A,,4 A,,4 G,,4 E,,4 |
 P2 drums

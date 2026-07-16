@@ -1,5 +1,5 @@
-# song: pop  tempo: 118.00  meter: 4/4  key: C  grid: 1/16
-# instruments: bass:33 drums:kit keys:0 lead:81
+song: pop  tempo: 118.00  meter: 4/4  key: C  grid: 1/16
+instruments: bass:33 drums:kit keys:0 lead:81
 
 P1  bass         | A,,,8 A,,,8 |
 P2  drums

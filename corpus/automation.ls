@@ -1,8 +1,8 @@
-# song: automation-demo  tempo: 110.00  meter: 4/4  key: Am  grid: 1/16
-# instruments: lead:81 pad:89
-#bind cutoff = cc74 [0..1]
-#bind lead.vib = bend [-2..2]
-#bind macro = host:mix/lead
+song: automation-demo  tempo: 110.00  meter: 4/4  key: Am  grid: 1/16
+instruments: lead:81 pad:89
+bind cutoff = cc74 [0..1]
+bind lead.vib = bend [-2..2]
+bind macro = host:mix/lead
 
 P1 lead | a2 c2 e2 c2 a4 g4 |
   @cutoff { 0:0.2 8:1 smooth 25/2:0.6 16:0.4 }

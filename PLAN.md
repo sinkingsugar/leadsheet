@@ -231,7 +231,8 @@ calls, no model deps in the crate.
 ## Phase 5 — Host enablement
 
 **Status: DONE 2026-07-12** (comment-line emission deliberately not
-done — syntax decision stays deferred per the Rejected list).
+done — comments have a syntax since the 2026-07-15 sigil split (`//`),
+but stay dropped and are never emitted, per the Rejected list).
 
 - [x] **wasm32 target**: `leadsheet-core` builds on
       `wasm32-unknown-unknown` out of the box; GitHub Actions CI checks
@@ -300,6 +301,20 @@ provably ambiguous against digit cells in a whitespace-free lane;
 canonicality caught it) and the instrument-position meter token — were
 again delegated to the resident LLM user and join the retroactive
 bake-off above.
+
+**Recorded exception (2026-07-15) — the sigil split:** Gio blessed the
+*scope* (retire `#` entirely, no backward compatibility) after noting
+that `#` was overloaded across three roles — header directive, `bind`
+directive, and freeform comment — disambiguated only by keyword
+lookahead. That overload had a real cost: a comment could not begin with
+a reserved word (`# bind the door` was a hard error, not a comment), and
+`#` meant "ignore this line" and "this line is load-bearing config" at
+once — the exact ambiguity the format exists to avoid. The split:
+`song:` / `instruments:` / `bind` become bare directives (joining the
+pre-existing bare `arrangement:`), and `//` becomes the comment. The
+spellings were again delegated to the resident LLM user and join the
+retroactive bake-off above. Comments stay lossy (dropped, never
+emitted) — making annotations survive remains on the Rejected list.
 
 **Recorded narrowings (review triage rounds 2–4; BLESSED by Gio
 2026-07-13):** four retroactive *format narrowings* shipped as

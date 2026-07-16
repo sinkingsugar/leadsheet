@@ -14,8 +14,8 @@ use proptest::prelude::*;
 /// drum lanes (accents, ghosts, stroke digits), chord mode, direct bars,
 /// variants, arrangement labels/reps/silence.
 const BASE_LS: &str = "\
-# song: m  tempo: 120.00  meter: 4/4  key: Am  swing: 56%  grid: 1/16
-# instruments: p:0 d:kit
+song: m  tempo: 120.00  meter: 4/4  key: Am  swing: 56%  grid: 1/16
+instruments: p:0 d:kit
 
 P1 p | C4 >[EG]2 ~z2 ^F8- |
 P2 d
@@ -117,17 +117,17 @@ proptest! {
 /// clean errors now, and stay that way.
 #[test]
 fn pathological_inputs_error_cleanly() {
-    let head = "# song: x  tempo: 120  meter: 4/4\n# instruments: p:0\n";
+    let head = "song: x  tempo: 120  meter: 4/4\ninstruments: p:0\n";
     for (label, text) in [
         ("huge direct bar", format!("{head}b4294967295 p | C16 |\n")),
         ("bar beyond limit", format!("{head}b100001 p | C16 |\n")),
         (
             "huge meter numerator",
-            "# song: x  tempo: 120  meter: 4294967295/4\n# instruments: p:0\nb1 p | C16 |\n".into(),
+            "song: x  tempo: 120  meter: 4294967295/4\ninstruments: p:0\nb1 p | C16 |\n".into(),
         ),
         (
             "zero meter numerator",
-            "# song: x  tempo: 120  meter: 0/4\n# instruments: p:0\nb1 p |  |\n".into(),
+            "song: x  tempo: 120  meter: 0/4\ninstruments: p:0\nb1 p |  |\n".into(),
         ),
         ("duration sum overflow", format!("{head}b1 p | C4294967290 C10 |\n")),
         ("single overflowing duration", format!("{head}b1 p | C4294967295 |\n")),
@@ -152,12 +152,12 @@ fn pathological_inputs_error_cleanly() {
 /// at 120 BPM; the flat 100k cap only binds for meters below 4/4.)
 #[test]
 fn generous_but_bounded() {
-    let head = "# song: x  tempo: 120  meter: 4/4\n# instruments: p:0\n";
+    let head = "song: x  tempo: 120  meter: 4/4\ninstruments: p:0\n";
     let long = format!("{head}P1 p | C16 |\narrangement:\n  [P1] x69904\n");
     assert_eq!(parse::parse(&long).unwrap().n_bars, 69904);
     let over = format!("{head}P1 p | C16 |\narrangement:\n  [P1] x69905\n");
     assert!(parse::parse(&over).is_err(), "one bar past the tick domain");
-    let odd_meter = "# song: x  tempo: 120  meter: 15/8\n# instruments: p:0\nb1 p | z30 |\n";
+    let odd_meter = "song: x  tempo: 120  meter: 15/8\ninstruments: p:0\nb1 p | z30 |\n";
     assert_eq!(parse::parse(odd_meter).unwrap().meter, (15, 8));
 }
 
@@ -170,7 +170,7 @@ fn extreme_tempo_and_meter_render_cleanly() {
         [("0.0001", false), ("0.001", false), ("1000000", true), ("3.5", false), ("3.6", true)]
     {
         let text = format!(
-            "# song: x  tempo: {tempo}  meter: 4/4  grid: 1/16\n# instruments: p:0\nb1 p | C16 |\n"
+            "song: x  tempo: {tempo}  meter: 4/4  grid: 1/16\ninstruments: p:0\nb1 p | C16 |\n"
         );
         match parse::parse(&text) {
             Ok(q) => {
@@ -184,8 +184,7 @@ fn extreme_tempo_and_meter_render_cleanly() {
             }
         }
     }
-    let text =
-        "# song: x  tempo: 120  meter: 64/8  grid: 1/16\n# instruments: p:0\nb1 p | z128 |\n";
+    let text = "song: x  tempo: 120  meter: 64/8  grid: 1/16\ninstruments: p:0\nb1 p | z128 |\n";
     let q = parse::parse(text).unwrap();
     assert!(ingest::ingest_midi(&leadsheet_core::render::render(&q), "x").is_ok());
 }

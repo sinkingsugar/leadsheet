@@ -5,8 +5,8 @@
 use leadsheet_core::grid::TICKS_PER_BEAT;
 use leadsheet_core::{emit, parse, render};
 
-const HEAD: &str = "# song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n\
-                    # instruments: bass:33 drums:kit\n\n";
+const HEAD: &str = "song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n\
+                    instruments: bass:33 drums:kit\n\n";
 
 #[test]
 fn a_three_four_bar_inside_a_four_four_song() {

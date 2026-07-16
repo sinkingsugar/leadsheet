@@ -1,8 +1,8 @@
 //! Layer 4 — QSong → text: patterns + arrangement.
 //!
 //! ```text
-//! # song: demo  tempo: 120.00  meter: 4/4  key: Am  grid: 1/16
-//! # instruments: bass:33 drums:kit piano:0 lead:81
+//! song: demo  tempo: 120.00  meter: 4/4  key: Am  grid: 1/16
+//! instruments: bass:33 drums:kit piano:0 lead:81
 //!
 //! P1 bass  | A,,4 A,,4 G,,4 E,,4 |
 //! P2 drums
@@ -756,7 +756,7 @@ pub fn emit_document(d: &Document) -> String {
     let mut out = String::new();
     let _ = write!(
         out,
-        "# song: {}  tempo: {:.2}  meter: {}/{}",
+        "song: {}  tempo: {:.2}  meter: {}/{}",
         d.header.name, d.header.bpm, d.header.meter.0, d.header.meter.1
     );
     if let Some(key) = d.header.key {
@@ -774,11 +774,11 @@ pub fn emit_document(d: &Document) -> String {
     }
     out.push_str("  grid: 1/16\n");
     if d.instruments.is_empty() {
-        out.push_str("# instruments:\n");
+        out.push_str("instruments:\n");
     } else {
         let _ = writeln!(
             out,
-            "# instruments: {}",
+            "instruments: {}",
             d.instruments.iter().map(instrument_field).collect::<Vec<_>>().join(" ")
         );
     }
@@ -794,7 +794,7 @@ pub fn emit_document(d: &Document) -> String {
         for b in binds {
             let _ = writeln!(
                 out,
-                "#bind {} = {}{}",
+                "bind {} = {}{}",
                 bind_key(b),
                 target_text(&b.target),
                 domain_text(b.domain)

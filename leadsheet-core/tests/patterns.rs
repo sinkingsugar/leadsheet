@@ -171,8 +171,8 @@ fn compression_hits_plan_target() {
 #[test]
 fn arrangement_rows_parse_labels_and_reps() {
     let text = "\
-# song: manual  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: bass:33
+song: manual  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: bass:33
 P1 bass | C,16 |
 P7 bass | D,8 E,8 |
 arrangement:
@@ -196,8 +196,8 @@ fn multi_bar_patterns_parse_and_place() {
     // The plan's own Layer-4 example shape: a 4-bar chord pattern stacked
     // with 1-bar patterns that repeat each bar of the unit.
     let text = "\
-# song: multi  tempo: 120.00  meter: 4/4  grid: 1/16
-# instruments: bass:33 piano:0
+song: multi  tempo: 120.00  meter: 4/4  grid: 1/16
+instruments: bass:33 piano:0
 P1 bass | A,,16 |
 P2 piano* | Am . . . | F . C . | G . . . | Am . . . |
 P3 bass | C,8 D,8- | D,8 E,8 |
@@ -217,8 +217,8 @@ arrangement:
     assert_eq!(q.tracks[1].notes.len(), 30);
     // Mismatched multi-bar lengths in one stack are rejected.
     let bad = "\
-# song: x  tempo: 120  meter: 4/4
-# instruments: a:0 b:0
+song: x  tempo: 120  meter: 4/4
+instruments: a:0 b:0
 P1 a | C16 | D16 |
 P2 b | E16 | F16 | G16 |
 arrangement:
@@ -229,7 +229,7 @@ arrangement:
 
 #[test]
 fn arrangement_rejects_unknown_pattern_and_duplicates() {
-    let head = "# song: x  tempo: 100  meter: 4/4\n# instruments: p:0\n";
+    let head = "song: x  tempo: 100  meter: 4/4\ninstruments: p:0\n";
     let unknown = format!("{head}arrangement:\n  [P3]\n");
     assert!(parse::parse(&unknown).is_err());
     let dup = format!("{head}P1 p | C16 |\nP1 p | D16 |\n");
@@ -243,8 +243,8 @@ fn tie_survives_pattern_instantiation() {
     // A pad note held across repeated pattern instances must come back as
     // one long note, not per-bar fragments.
     let text = "\
-# song: pad  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: pad:89
+song: pad  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: pad:89
 P1 pad | C16- |
 P2 pad | C16 |
 arrangement:

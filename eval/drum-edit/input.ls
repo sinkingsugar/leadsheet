@@ -1,5 +1,5 @@
-# song: drumedit  tempo: 110.00  meter: 4/4  grid: 1/16
-# instruments: bass:33 drums:kit
+song: drumedit  tempo: 110.00  meter: 4/4  grid: 1/16
+instruments: bass:33 drums:kit
 
 P1 bass | A,,8 G,,8 |
 P2 drums

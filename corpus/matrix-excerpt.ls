@@ -1,5 +1,5 @@
-# song: matrix-excerpt  tempo: 125.01  meter: 4/4  key: Bb  grid: 1/16
-# instruments: fingered_bass:33 acoustic_grand_piano:0 string_ensemble_1:48 drums:kit
+song: matrix-excerpt  tempo: 125.01  meter: 4/4  key: Bb  grid: 1/16
+instruments: fingered_bass:33 acoustic_grand_piano:0 string_ensemble_1:48 drums:kit
 
 P1  fingered_bass             | D,,16 |
 P2  fingered_bass             | D,,8 D,,4 D,,4 & [FAc]16 |

@@ -1,5 +1,5 @@
-# song: waltz  tempo: 140.00  meter: 3/4  key: Eb  grid: 1/16
-# instruments: bass:32 piano:0 drums:kit
+song: waltz  tempo: 140.00  meter: 3/4  key: Eb  grid: 1/16
+instruments: bass:32 piano:0 drums:kit
 
 P1 bass   | _E,,,12 |
 P2 piano* | z Eb Eb |

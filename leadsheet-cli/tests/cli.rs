@@ -32,8 +32,8 @@ fn no_panic(out: &Output) {
 }
 
 const VALID_LS: &str = "\
-# song: cli  tempo: 120.00  meter: 4/4  grid: 1/16
-# instruments: p:0 d:kit
+song: cli  tempo: 120.00  meter: 4/4  grid: 1/16
+instruments: p:0 d:kit
 
 P1 p | C4 E4 G4 c4 |
 P2 d
@@ -86,8 +86,8 @@ fn fmt_is_document_canonical_and_idempotent() {
     // pattern id, direct bars out of order, label). Document-canonical
     // fmt normalizes spelling/layout but PRESERVES the structure.
     let scruffy = "\
-# song: f  tempo:   90.00   meter: 4/4  grid: 1/16
-# instruments: p:0
+song: f  tempo:   90.00   meter: 4/4  grid: 1/16
+instruments: p:0
 P7 p |   G4 E4   C8   |
 b2 p |   E4 G4   C8   |
 b1 p | C8 E4 G4 |
@@ -116,7 +116,7 @@ arrangement:
 
 #[test]
 fn fmt_refuses_invalid_input_without_touching_it() {
-    let broken = "# song: x  tempo: 120\n# instruments: p:0\nb1 p | C4 |\n";
+    let broken = "song: x  tempo: 120\ninstruments: p:0\nb1 p | C4 |\n";
     let f = Tmp::new("badfmt.ls", broken.as_bytes());
     let out = bin().args(["fmt"]).arg(&f.0).output().unwrap();
     no_panic(&out);
@@ -185,7 +185,7 @@ fn eval_harness_passes_on_sample_outputs() {
         (
             "extra track",
             target
-                .replace("# instruments: lead:81", "# instruments: lead:81 ghost:0")
+                .replace("instruments: lead:81", "instruments: lead:81 ghost:0")
                 .replace("b1 lead | e4 c4 d4 B4 |", "b1 lead | e4 c4 d4 B4 |\nb1 ghost | C16 |"),
         ),
         ("renamed track", target.replace("lead", "solo")),

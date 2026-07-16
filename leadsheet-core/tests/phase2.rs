@@ -8,8 +8,8 @@ use leadsheet_core::grid::MusicalTime;
 use leadsheet_core::{diff, emit, parse};
 
 const AUTHOR: &str = "\
-# song: author  tempo: 100.00  meter: 4/4  key: Am  grid: 1/16
-# instruments: piano:0 lead:81 drums:kit
+song: author  tempo: 100.00  meter: 4/4  key: Am  grid: 1/16
+instruments: piano:0 lead:81 drums:kit
 
 P7 piano* | Am . . . | F . G . |
 P9 lead   | e4 c4 d4 B4 |
@@ -54,6 +54,39 @@ fn author_structure_survives_the_canonical_loop() {
     }
 }
 
+/// `//` line comments are an authoring courtesy: they parse away anywhere
+/// (even indented inside the arrangement block) and the canonical form
+/// never emits them, so a commented file is byte-identical to the clean
+/// one once it round-trips.
+#[test]
+fn line_comments_are_dropped_and_never_emitted() {
+    let commented = "\
+song: c  tempo: 100.00  meter: 4/4  grid: 1/16
+// a note to self, before the instruments
+instruments: piano:0
+
+// the verse riff
+P1 piano | c4 e4 g4 c4 |
+
+arrangement:
+  // and a comment between rows
+  A: [P1] x2
+";
+    let clean = "\
+song: c  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: piano:0
+
+P1 piano | c4 e4 g4 c4 |
+
+arrangement:
+  A: [P1] x2
+";
+    let dc = doc(commented);
+    let out = emit::emit_document(&dc);
+    assert!(!out.contains("//"), "comments must not survive emission:\n{out}");
+    assert_eq!(dc, doc(clean), "a commented file parses to the same Document as the clean one");
+}
+
 /// E6: direct bars overlay the arrangement timeline, and *source order*
 /// carries tie semantics across items.
 #[test]
@@ -61,8 +94,8 @@ fn mixed_direct_and_arrangement_semantics_are_pinned() {
     // Row leaves a tie open at the end of bar 1; the direct bar written
     // AFTER it continues the note: one 32-cell note.
     let joined = "\
-# song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 P1 p | C16- |
 arrangement:
   [P1]
@@ -76,8 +109,8 @@ b2 p | C16 |
     // The same content with the direct bar written FIRST does not join —
     // the continuation had not been placed yet when b2 resolved.
     let split = "\
-# song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 P1 p | C16- |
 b2 p | C16 |
 arrangement:
@@ -88,8 +121,8 @@ arrangement:
 
     // Overlay: a direct bar stacks with (not replaces) row content.
     let overlay = "\
-# song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 P1 p | C16 |
 arrangement:
   [P1] x2
@@ -236,8 +269,10 @@ fn validate_closes_the_triage_2_holes() {
     }
     assert!(d.validate().is_err());
 
-    // B3: labels that would reroute or comment out the emitted row line.
-    for label in ["a|b", " x", "#x"] {
+    // B3: labels that would reroute, comment out, or reparse the emitted
+    // row line (`//` comments; `song`/`instruments` emit `song: [..]` which
+    // reparses as a header directive).
+    for label in ["a|b", " x", "//x", "song", "instruments"] {
         let mut d = good.clone();
         let row = d
             .timeline
@@ -251,9 +286,10 @@ fn validate_closes_the_triage_2_holes() {
         assert!(d.validate().is_err(), "label {label:?} must be rejected");
     }
 
-    // B3: instrument names are whitelisted now ('[' would reroute a
-    // pattern line as an arrangement row, '#' a drum opener as a comment).
-    for name in ["a[b", "#x", "a b", ""] {
+    // B3: instrument names are whitelisted (letters/digits/_/-) so none can
+    // reroute a line — `[` would turn a reference into an arrangement row,
+    // `/` opens a `//` comment, whitespace splits the token.
+    for name in ["a[b", "//x", "a b", ""] {
         let mut d = good.clone();
         d.instruments[0].name = name.into();
         assert!(d.validate().is_err(), "instrument {name:?} must be rejected");
@@ -437,8 +473,8 @@ fn bpm_is_hundredth_canonical_in_source() {
 #[test]
 fn odd_but_legal_labels_roundtrip() {
     let text = "\
-# song: l  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: l  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 P1 p | C16 |
 
 arrangement:
@@ -458,8 +494,8 @@ arrangement:
 #[test]
 fn semantic_diff_sees_instrument_reordering() {
     let text = "\
-# song: a3  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: piano:0 bass:33
+song: a3  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: piano:0 bass:33
 P1 piano | C16 |
 b1 bass | D,16 |
 arrangement:
@@ -488,16 +524,16 @@ arrangement:
 #[test]
 fn semantic_diff_sees_timeline_order() {
     let joined = "\
-# song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 P1 p | C16- |
 arrangement:
   [P1]
 b2 p | C16 |
 ";
     let split = "\
-# song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: e6  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 P1 p | C16- |
 b2 p | C16 |
 arrangement:
@@ -516,8 +552,8 @@ arrangement:
 #[test]
 fn semantic_diff_reports_kin_changes() {
     let base = "\
-# song: k  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: k  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 P1 p     | C4 E4 G4 c4 |
 P2 p     | D4 F4 A4 d4 |
 P3 p ~P1 | C4 E4 G4 z4 |
@@ -538,8 +574,8 @@ arrangement:
 #[test]
 fn semantic_diff_ignores_spelling_across_key_changes() {
     let sharp_side = "\
-# song: s  tempo: 100.00  meter: 4/4  key: Am  grid: 1/16
-# instruments: p:0
+song: s  tempo: 100.00  meter: 4/4  key: Am  grid: 1/16
+instruments: p:0
 P1 p | ^A4 ^C4 ^F4 ^G4 |
 arrangement:
   [P1]

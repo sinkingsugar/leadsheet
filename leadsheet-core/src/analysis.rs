@@ -135,8 +135,8 @@ mod tests {
     #[test]
     fn functions_in_a_minor() {
         let text = "\
-# song: h  tempo: 100.00  meter: 4/4  key: Am  grid: 1/16
-# instruments: piano:0 bass:33
+song: h  tempo: 100.00  meter: 4/4  key: Am  grid: 1/16
+instruments: piano:0 bass:33
 b1 piano | [A,CE]16 |
 b2 piano | [FA,C]16 & z16 |
 b3 piano | [GB,D]16 |
@@ -176,8 +176,8 @@ b4 bass | E,,8 A,,8 |
     #[test]
     fn silent_bars_are_none() {
         let text = "\
-# song: h  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: h  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 P1 p | C16 |
 arrangement:
   [P1]

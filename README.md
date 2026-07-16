@@ -26,8 +26,8 @@ compiler, compiled to wasm — everything runs client-side, with live
 diagnostics in the editor and a GM soundfont at the other end.
 
 ```
-# song: demo  tempo: 96.00  meter: 4/4  key: Am  swing: 56%  grid: 1/16
-# instruments: bass:33 drums:kit piano:0 lead:81
+song: demo  tempo: 96.00  meter: 4/4  key: Am  swing: 56%  grid: 1/16
+instruments: bass:33 drums:kit piano:0 lead:81
 
 P1 bass   | A,,4 A,,4 G,,4 E,,4 |
 P2 drums@mf

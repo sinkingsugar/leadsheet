@@ -188,15 +188,15 @@ fn roundtrip_with_inferred_tempo_and_jitter() {
 
 #[test]
 fn parse_rejects_malformed() {
-    let ok = "# song: x  tempo: 120.00  meter: 4/4  grid: 1/16\n# instruments: p:0\nb1 p | C16 |\n";
+    let ok = "song: x  tempo: 120.00  meter: 4/4  grid: 1/16\ninstruments: p:0\nb1 p | C16 |\n";
     assert!(parse::parse(ok).is_ok());
     for bad in [
-        "b1 p | C16 |\n",                                                      // no header
-        "# song: x  tempo: 120  meter: 4/4\n# instruments: p:0\nb1 q | C16 |", // unknown inst
-        "# song: x  tempo: 120  meter: 4/4\n# instruments: p:0\nb1 p | C15 |", // short bar
-        "# song: x  tempo: 120  meter: 4/4\n# instruments: p:0\nb1 p | C17 |", // overflow
-        "# song: x  tempo: 120  meter: 4/4\n# instruments: p:0\nb1 p | Q16 |", // bad pitch
-        "# song: x  tempo: nope\n# instruments: p:0\nb1 p | C16 |",            // bad tempo
+        "b1 p | C16 |\n",                                                  // no header
+        "song: x  tempo: 120  meter: 4/4\ninstruments: p:0\nb1 q | C16 |", // unknown inst
+        "song: x  tempo: 120  meter: 4/4\ninstruments: p:0\nb1 p | C15 |", // short bar
+        "song: x  tempo: 120  meter: 4/4\ninstruments: p:0\nb1 p | C17 |", // overflow
+        "song: x  tempo: 120  meter: 4/4\ninstruments: p:0\nb1 p | Q16 |", // bad pitch
+        "song: x  tempo: nope\ninstruments: p:0\nb1 p | C16 |",            // bad tempo
     ] {
         assert!(parse::parse(bad).is_err(), "should reject: {bad}");
     }

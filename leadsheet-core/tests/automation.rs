@@ -1,4 +1,4 @@
-//! The CC automation vertical slice, end to end: `#bind` + `@lane` parse,
+//! The CC automation vertical slice, end to end: `bind` + `@lane` parse,
 //! resolve to keyframed `QAuto`, render to CC events, and emit canonically
 //! (the fixpoint that every format feature must satisfy).
 
@@ -9,9 +9,9 @@ use leadsheet_core::render::render;
 use midly::{MidiMessage, Smf, TrackEventKind};
 
 const SRC: &str = "\
-# song: auto  tempo: 120.00  meter: 4/4  grid: 1/16
-# instruments: lead:81
-#bind cutoff = cc74
+song: auto  tempo: 120.00  meter: 4/4  grid: 1/16
+instruments: lead:81
+bind cutoff = cc74
 
 P1 lead | c4 e4 g4 c4 |
   @cutoff { 0:0 8:100 16:40 }
@@ -25,7 +25,7 @@ fn bind_and_lane_emit_canonically() {
     let doc = parse_document(SRC).unwrap();
     let text = emit_document(&doc);
     // The bind and the lane survive emission verbatim...
-    assert!(text.contains("#bind cutoff = cc74"), "emitted:\n{text}");
+    assert!(text.contains("bind cutoff = cc74"), "emitted:\n{text}");
     assert!(text.contains("@cutoff { 0:0 8:100 16:40 }"), "emitted:\n{text}");
     // ...and emission is a byte-for-byte fixpoint.
     let doc2 = parse_document(&text).unwrap();
@@ -84,7 +84,7 @@ fn render_emits_cc_ramp() {
 
 #[test]
 fn unbound_lane_is_rejected() {
-    let src = SRC.replace("#bind cutoff = cc74\n", "");
+    let src = SRC.replace("bind cutoff = cc74\n", "");
     let err = parse(&src).unwrap_err();
     assert!(format!("{err:?}").contains("bound"), "expected an unbound-name error, got {err:?}");
 }
@@ -190,7 +190,7 @@ fn exp_ease_bends_the_curve() {
 /// A one-track song binding `name` to `target_text`, with `lane` keyframes.
 fn one_lane(target_text: &str, lane: &str) -> String {
     format!(
-        "# song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n# instruments: lead:81\n#bind p = \
+        "song: t  tempo: 120.00  meter: 4/4  grid: 1/16\ninstruments: lead:81\nbind p = \
          {target_text}\n\nP1 lead | c4 e4 g4 c4 |\n  @p {{ {lane} }}\n\narrangement:\n  [P1]\n"
     )
 }
@@ -248,7 +248,7 @@ fn extern_target_round_trips_but_renders_nothing() {
     let src = one_lane("vst3:synth/cutoff", "0:0 8:1");
     let doc = parse_document(&src).unwrap();
     let text = emit_document(&doc);
-    assert!(text.contains("#bind p = vst3:synth/cutoff"), "extern bind not emitted:\n{text}");
+    assert!(text.contains("bind p = vst3:synth/cutoff"), "extern bind not emitted:\n{text}");
     assert_eq!(text, emit_document(&parse_document(&text).unwrap()), "extern emission fixpoint");
     // Beyond-MIDI: no controller / bend / aftertouch events at all.
     let midi = render(&parse(&src).unwrap());
@@ -290,7 +290,7 @@ fn all_target_spellings_round_trip() {
         let src = one_lane(t, "0:0 8:1");
         let doc = parse_document(&src).unwrap_or_else(|e| panic!("{t}: {e}"));
         let text = emit_document(&doc);
-        assert!(text.contains(&format!("#bind p = {t}")), "{t} not emitted:\n{text}");
+        assert!(text.contains(&format!("bind p = {t}")), "{t} not emitted:\n{text}");
         assert_eq!(text, emit_document(&parse_document(&text).unwrap()), "{t} fixpoint");
     }
     // Out-of-range and malformed targets are rejected.
@@ -375,10 +375,10 @@ fn decimal_position_is_rejected() {
 // Instrument-scoped binds: innermost wins, per-track resolution.
 
 const SCOPED: &str = "\
-# song: scope  tempo: 120.00  meter: 4/4  grid: 1/16
-# instruments: lead:81 pad:89
-#bind cutoff = cc1
-#bind lead.cutoff = cc74
+song: scope  tempo: 120.00  meter: 4/4  grid: 1/16
+instruments: lead:81 pad:89
+bind cutoff = cc1
+bind lead.cutoff = cc74
 
 P1 lead | c4 e4 g4 c4 |
   @cutoff { 0:0 16:100 }
@@ -406,10 +406,10 @@ fn instrument_scope_overrides_song_scope() {
 fn scoped_binds_emit_canonically() {
     let text = emit_document(&parse_document(SCOPED).unwrap());
     // Both binds survive, sorted by their spelled key (cutoff < lead.cutoff).
-    assert!(text.contains("#bind cutoff = cc1"), "song bind:\n{text}");
-    assert!(text.contains("#bind lead.cutoff = cc74"), "scoped bind:\n{text}");
-    let cutoff = text.find("#bind cutoff").unwrap();
-    let scoped = text.find("#bind lead.cutoff").unwrap();
+    assert!(text.contains("bind cutoff = cc1"), "song bind:\n{text}");
+    assert!(text.contains("bind lead.cutoff = cc74"), "scoped bind:\n{text}");
+    let cutoff = text.find("bind cutoff").unwrap();
+    let scoped = text.find("bind lead.cutoff").unwrap();
     assert!(cutoff < scoped, "binds sort by spelled key");
     assert_eq!(text, emit_document(&parse_document(&text).unwrap()), "scoped-bind fixpoint");
 }
@@ -418,9 +418,9 @@ fn scoped_binds_emit_canonically() {
 fn lane_bound_only_on_another_instrument_is_rejected() {
     // `foo` is bound only on `lead`; a `@foo` lane on `pad` has no bind.
     let src = "\
-# song: s  tempo: 120.00  meter: 4/4  grid: 1/16
-# instruments: lead:81 pad:89
-#bind lead.foo = cc9
+song: s  tempo: 120.00  meter: 4/4  grid: 1/16
+instruments: lead:81 pad:89
+bind lead.foo = cc9
 
 P1 pad | [ceg]16 |
   @foo { 0:0 16:100 }
@@ -441,7 +441,7 @@ fn domain_remaps_onto_the_cc_range() {
     let src = one_lane("cc74 [0..1]", "0:0 8:1");
     let doc = parse_document(&src).unwrap();
     let text = emit_document(&doc);
-    assert!(text.contains("#bind p = cc74 [0..1]"), "domain not emitted:\n{text}");
+    assert!(text.contains("bind p = cc74 [0..1]"), "domain not emitted:\n{text}");
     assert_eq!(text, emit_document(&parse_document(&text).unwrap()), "domain fixpoint");
     let cc74 = controllers(&render(&parse(&src).unwrap()), 74);
     assert_eq!(cc74.first().map(|(_, v)| *v), Some(0), "0.0 -> wire 0");

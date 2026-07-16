@@ -1,5 +1,5 @@
-# song: rudiments  tempo: 96.00  meter: 4/4  grid: 1/16
-# instruments: drums:kit
+song: rudiments  tempo: 96.00  meter: 4/4  grid: 1/16
+instruments: drums:kit
 
 P1 drums
   S |2xx. 2xx. 2xx. 2xx.|

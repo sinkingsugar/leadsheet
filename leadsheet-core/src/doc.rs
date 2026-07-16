@@ -28,7 +28,7 @@ use crate::key::Key;
 use crate::notation::{self, Mark, Tok};
 use std::collections::HashMap;
 
-/// The `# song:` line.
+/// The `song:` line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Header {
     pub name: String,
@@ -48,7 +48,7 @@ impl Header {
     }
 }
 
-/// One `# instruments:` entry, in track order.
+/// One `instruments:` entry, in track order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Instrument {
     pub name: String,
@@ -70,11 +70,11 @@ pub enum BindScope {
     Instrument(usize),
 }
 
-/// A `#bind name = target` declaration: gives an automation lane's `@name`
-/// a concrete destination. Song-level (`#bind cutoff = cc74`) or
-/// instrument-scoped (`#bind lead.cutoff = cc74`); see [`BindScope`]. An
+/// A `bind name = target` declaration: gives an automation lane's `@name`
+/// a concrete destination. Song-level (`bind cutoff = cc74`) or
+/// instrument-scoped (`bind lead.cutoff = cc74`); see [`BindScope`]. An
 /// optional `[min..max]` `domain` maps the authored value range onto the
-/// target's wire range at render (`#bind cutoff = cc74 [0..1]`); without
+/// target's wire range at render (`bind cutoff = cc74 [0..1]`); without
 /// one, values are already in wire units.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bind {
@@ -239,7 +239,7 @@ pub enum TimelineItem {
 pub struct Document {
     pub header: Header,
     pub instruments: Vec<Instrument>,
-    /// Song-level automation bindings (`#bind name = target`).
+    /// Song-level automation bindings (`bind name = target`).
     pub binds: Vec<Bind>,
     /// In source order.
     pub patterns: Vec<PatternDef>,
@@ -387,12 +387,16 @@ impl Document {
                     }
                     // What actually breaks the emitted row line: `[`
                     // ends the label early, `|` reroutes the line as a
-                    // music line, a leading `#` turns it into a comment,
-                    // and surrounding whitespace doesn't survive the
-                    // reparse trim. (`]` before the `[` is harmless.)
+                    // music line, a leading `//` turns it into a comment,
+                    // a bare `song`/`instruments` label emits `song: [..]`
+                    // which reparses as a header directive, and surrounding
+                    // whitespace doesn't survive the reparse trim. (`]`
+                    // before the `[` is harmless.)
                     if let Some(l) = &row.label
                         && (l.contains(['\n', '[', '|'])
-                            || l.starts_with('#')
+                            || l.starts_with("//")
+                            || l == "song"
+                            || l == "instruments"
                             || l.trim() != l.as_str())
                     {
                         return Err(doc_err(format!("row label {l:?} would break emission")));
@@ -617,7 +621,7 @@ fn validate_meter(m: (u32, u32), who: &str) -> Result<(), Error> {
 
 /// Target invariants: a CC's controller and an NRPN parameter are in
 /// range, and an opaque `Extern` carries a non-empty, emission-safe path
-/// (graphic ASCII — no whitespace to break the `#bind` line).
+/// (graphic ASCII — no whitespace to break the `bind` line).
 fn validate_target(t: &Target) -> Result<(), Error> {
     match t {
         Target::Cc(n) if *n > 127 => Err(doc_err(format!("controller number {n} beyond CC 127"))),
@@ -634,7 +638,7 @@ fn validate_target(t: &Target) -> Result<(), Error> {
     }
 }
 
-/// An opaque target path must survive the `#bind` line verbatim: non-empty
+/// An opaque target path must survive the `bind` line verbatim: non-empty
 /// and all graphic ASCII (no whitespace, no control characters).
 pub(crate) fn valid_extern_path(path: &str) -> bool {
     !path.is_empty() && path.bytes().all(|b| b.is_ascii_graphic())
@@ -655,7 +659,7 @@ fn validate_autos(
     for lane in autos {
         if Bind::resolve(binds, &lane.name, track).is_none() {
             return Err(doc_err(format!(
-                "{who}: @{} is not bound (add `#bind {} = ...`)",
+                "{who}: @{} is not bound (add `bind {} = ...`)",
                 lane.name, lane.name
             )));
         }

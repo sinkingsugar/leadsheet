@@ -181,8 +181,8 @@ fn key_detection_finds_am_and_eb() {
 fn handwritten_chord_and_drum_text_renders() {
     // The Claude-authoring path: chord symbols + drum lanes from scratch.
     let text = "\
-# song: sketch  tempo: 90.00  meter: 4/4  key: C  grid: 1/16
-# instruments: piano:0 drums:kit
+song: sketch  tempo: 90.00  meter: 4/4  key: C  grid: 1/16
+instruments: piano:0 drums:kit
 
 P1 piano* | C . Am7 . |
 P2 drums
@@ -367,8 +367,8 @@ fn dynamics_emit_and_roundtrip() {
 fn drum_stroke_density_roundtrips() {
     // `2`/`3`/`4` lane cells: drags, triplet strokes, buzzes.
     let text = "\
-# song: rolls  tempo: 110.00  meter: 4/4  grid: 1/16
-# instruments: drums:kit
+song: rolls  tempo: 110.00  meter: 4/4  grid: 1/16
+instruments: drums:kit
 
 P1 drums
   K |x... .... x... ....|
@@ -405,8 +405,8 @@ fn stroke_subdivision_shapes_velocity() {
     // ruff) or a forward-leaning press (buzz). Render interpretation,
     // like swing — QNote.vel stays the anchor, notation stays 2/3/4.
     let text = "\
-# song: shape  tempo: 110.00  meter: 4/4  grid: 1/16
-# instruments: drums:kit
+song: shape  tempo: 110.00  meter: 4/4  grid: 1/16
+instruments: drums:kit
 
 b1 drums
   S |2... 3... 4... x...|
@@ -424,8 +424,8 @@ b1 drums
 #[test]
 fn swing_header_shifts_offbeats() {
     let text = "\
-# song: shuffle  tempo: 120.00  meter: 4/4  swing: 66%  grid: 1/16
-# instruments: p:0
+song: shuffle  tempo: 120.00  meter: 4/4  swing: 66%  grid: 1/16
+instruments: p:0
 b1 p | C4 D4 E4 F4 & z2 c2 z2 d2 z2 e2 z2 f2 |
 ";
     let q = parse::parse(text).unwrap();
@@ -447,22 +447,21 @@ b1 p | C4 D4 E4 F4 & z2 c2 z2 d2 z2 e2 z2 f2 |
 
     // 16th swing form parses too.
     let q = parse::parse(
-        "# song: x  tempo: 120  meter: 4/4  swing: 16th 58%  grid: 1/16\n# instruments: p:0\nb1 p | C16 |\n",
+        "song: x  tempo: 120  meter: 4/4  swing: 16th 58%  grid: 1/16\ninstruments: p:0\nb1 p | C16 |\n",
     )
     .unwrap();
     assert_eq!(q.swing, Some(leadsheet_core::grid::Swing { level: 16, percent: 58 }));
     // Out-of-range rejected.
     assert!(
-        parse::parse("# song: x  tempo: 120  swing: 90%\n# instruments: p:0\nb1 p | C16 |\n")
-            .is_err()
+        parse::parse("song: x  tempo: 120  swing: 90%\ninstruments: p:0\nb1 p | C16 |\n").is_err()
     );
 }
 
 #[test]
 fn chord_holds_accumulate_duration() {
     let text = "\
-# song: hold  tempo: 90.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: hold  tempo: 90.00  meter: 4/4  grid: 1/16
+instruments: p:0
 b1 p* | Dm7 . . . |
 b2 p* | . z G7 . |
 ";
@@ -470,8 +469,8 @@ b2 p* | . z G7 . |
     assert!(parse::parse(text).is_err(), "hold cannot cross a bar line");
 
     let text = "\
-# song: hold  tempo: 90.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: hold  tempo: 90.00  meter: 4/4  grid: 1/16
+instruments: p:0
 b1 p* | Dm7 . . . |
 ";
     let q = parse::parse(text).unwrap();
@@ -483,8 +482,8 @@ fn fractions_and_tuplets_author_roundtrip() {
     // The 3b authoring surface: 32nds, a dotted figure, a triplet, and a
     // tied tuplet — written by hand, parsed, rendered, canonicalized.
     let text = "\
-# song: frac  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: lead:81
+song: frac  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: lead:81
 b1 lead | C/2 D/2 E F2 (3 G A B)4 c8 |
 b2 lead | C3/2 D/2 E2 (3 [CE] z c)4- c4 z4 |
 ";
@@ -518,7 +517,7 @@ fn melodic_channel_wrap_never_hits_the_drum_channel() {
     // may land on GM percussion (channel 9).
     let insts: Vec<String> = (0..26).map(|i| format!("m{i}:0")).collect();
     let mut text = format!(
-        "# song: wrap  tempo: 120.00  meter: 4/4  grid: 1/16\n# instruments: {}\n",
+        "song: wrap  tempo: 120.00  meter: 4/4  grid: 1/16\ninstruments: {}\n",
         insts.join(" ")
     );
     for i in 0..26 {
@@ -544,8 +543,8 @@ fn swing_preserves_fractional_durations() {
     // swung offbeat keeps its 120 ticks instead of collapsing to 1.
     // 120 BPM, 960 PPQ: 1 tick = 60/(120*960) s; a 32nd = 0.0625 s.
     let text = "\
-# song: sw  tempo: 120.00  meter: 4/4  swing: 66%  grid: 1/16
-# instruments: p:0
+song: sw  tempo: 120.00  meter: 4/4  swing: 66%  grid: 1/16
+instruments: p:0
 b1 p | z2 c/2 z27/2 |
 ";
     let q = parse::parse(text).unwrap();
@@ -558,8 +557,8 @@ b1 p | z2 c/2 z27/2 |
 
     // 16th swing: offbeat 16th at 240 ticks, displaced by 58*480/100 - 240 = 38.
     let text = "\
-# song: sw  tempo: 120.00  meter: 4/4  swing: 16th 58%  grid: 1/16
-# instruments: p:0
+song: sw  tempo: 120.00  meter: 4/4  swing: 16th 58%  grid: 1/16
+instruments: p:0
 b1 p | z1 c/2 z/2 z14 |
 ";
     let q = parse::parse(text).unwrap();
@@ -572,8 +571,8 @@ b1 p | z1 c/2 z/2 z14 |
 #[test]
 fn tuplet_tie_across_the_barline_joins_at_exact_ticks() {
     let text = "\
-# song: tt  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: tt  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 b1 p | z12 (3 e f g)4- |
 b2 p | g4 z12 |
 ";
@@ -591,8 +590,8 @@ b2 p | g4 z12 |
 #[test]
 fn fractional_durations_in_overlapping_voices() {
     let text = "\
-# song: fv  tempo: 100.00  meter: 4/4  grid: 1/16
-# instruments: p:0
+song: fv  tempo: 100.00  meter: 4/4  grid: 1/16
+instruments: p:0
 b1 p | C16 & z4 e/2 f/2 e/2 f/2 z6 (3 g a b)4 |
 ";
     let q = parse::parse(text).unwrap();

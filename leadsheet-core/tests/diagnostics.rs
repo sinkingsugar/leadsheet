@@ -5,8 +5,8 @@
 use leadsheet_core::error::{Diagnostic, Error};
 use leadsheet_core::parse;
 
-const HEAD: &str = "# song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n\
-                    # instruments: piano:0 drums:kit\n";
+const HEAD: &str = "song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n\
+                    instruments: piano:0 drums:kit\n";
 
 fn diag_of(text: &str) -> Diagnostic {
     match parse::parse(text) {
@@ -106,28 +106,23 @@ fn unknown_pattern_in_arrangement() {
 
 #[test]
 fn header_mistakes() {
-    expect("# song: x  tempo: fast\n# instruments: p:0\nb1 p | C16 |\n", "bad-tempo", 1, "");
+    expect("song: x  tempo: fast\ninstruments: p:0\nb1 p | C16 |\n", "bad-tempo", 1, "");
     expect(
-        "# song: x  tempo: 120  meter: 5/16\n# instruments: p:0\nb1 p | C16 |\n",
+        "song: x  tempo: 120  meter: 5/16\ninstruments: p:0\nb1 p | C16 |\n",
         "bad-meter",
         1,
         "6/8",
     );
+    expect("song: x  tempo: 120  key: H\ninstruments: p:0\nb1 p | C16 |\n", "bad-key", 1, "Ebm");
     expect(
-        "# song: x  tempo: 120  key: H\n# instruments: p:0\nb1 p | C16 |\n",
-        "bad-key",
-        1,
-        "Ebm",
-    );
-    expect(
-        "# song: x  tempo: 120  swing: 90%\n# instruments: p:0\nb1 p | C16 |\n",
+        "song: x  tempo: 120  swing: 90%\ninstruments: p:0\nb1 p | C16 |\n",
         "bad-swing",
         1,
         "50%..75%",
     );
-    expect("b1 p | C16 |\n", "missing-header", 1, "# song:");
+    expect("b1 p | C16 |\n", "missing-header", 1, "song:");
     expect(
-        "# song: x  tempo: 120\n# instruments: p:0 p:1\nb1 p | C16 |\n",
+        "song: x  tempo: 120\ninstruments: p:0 p:1\nb1 p | C16 |\n",
         "duplicate-instrument",
         2,
         "",
@@ -178,7 +173,7 @@ fn diagnostics_serialize_for_check_json() {
 fn unknown_header_field_is_an_error_not_a_default() {
     // `metre:` (typo) must not silently yield 4/4.
     let d = expect(
-        "# song: x  tempo: 120  metre: 3/4\n# instruments: p:0\nb1 p | C16 |\n",
+        "song: x  tempo: 120  metre: 3/4\ninstruments: p:0\nb1 p | C16 |\n",
         "unknown-header-field",
         1,
         "meter",
@@ -186,7 +181,7 @@ fn unknown_header_field_is_an_error_not_a_default() {
     assert!(d.message.contains("metre"), "{d}");
     assert!(d.col > 0, "{d}");
     // Stray swing percent without the key.
-    expect("# song: x  tempo: 120  58%\n# instruments: p:0\nb1 p | C16 |\n", "bad-swing", 1, "66%");
+    expect("song: x  tempo: 120  58%\ninstruments: p:0\nb1 p | C16 |\n", "bad-swing", 1, "66%");
 }
 
 #[test]
@@ -214,7 +209,7 @@ fn tick_domain_caps_bars_per_meter() {
     // MIDI deltas are u28, so the bar cap tightens with the meter: a
     // 64/4 bar is 61,440 ticks and only 4,369 of them fit — far below
     // the flat 100k cap. The diagnostic says so.
-    let head64 = "# song: t  tempo: 120.00  meter: 64/4  grid: 1/16\n# instruments: p:0\n";
+    let head64 = "song: t  tempo: 120.00  meter: 64/4  grid: 1/16\ninstruments: p:0\n";
     let d = expect(&format!("{head64}b4370 p | z256 |\n"), "too-large", 3, "2^28");
     assert!(d.message.contains("4369"), "{d}");
     assert!(parse::parse(&format!("{head64}b4369 p | z256 |\n")).is_ok(), "the cap itself fits");
@@ -225,8 +220,8 @@ fn sub_hundredth_tempo_is_rejected_with_the_repair_value() {
     // B1 (triage-3): source BPM is hundredth-canonical — the emitter
     // spells {:.2}, so finer precision would be silently rewritten by
     // the first fmt. Rejected with the quantized spelling instead.
-    let text = "# song: t  tempo: 100.001  meter: 4/4  grid: 1/16\n\
-                # instruments: p:0\nb1 p | C16 |\n";
+    let text = "song: t  tempo: 100.001  meter: 4/4  grid: 1/16\n\
+                instruments: p:0\nb1 p | C16 |\n";
     let d = expect(text, "bad-tempo", 1, "tempo: 100.00");
     assert!(d.message.contains("sub-hundredth"), "{d}");
     // The canonical spelling itself stays legal, obviously.
@@ -236,13 +231,22 @@ fn sub_hundredth_tempo_is_rejected_with_the_repair_value() {
 #[test]
 fn instrument_names_are_whitelisted() {
     // '[' would reroute lines referencing the instrument as arrangement
-    // rows; '#' would comment out an emitted drum opener. The whitelist
-    // (letters, digits, _ -) closes the whole class.
-    for name in ["a[b", "#x", "a.b"] {
+    // rows; '/' would open a `//` comment on an emitted drum opener. The
+    // whitelist (letters, digits, _ -) closes the whole class.
+    for name in ["a[b", "/x", "a.b"] {
         let d = diag_of(&format!(
-            "# song: x  tempo: 120  grid: 1/16\n# instruments: {name}:0\nb1 {name} | C16 |\n"
+            "song: x  tempo: 120  grid: 1/16\ninstruments: {name}:0\nb1 {name} | C16 |\n"
         ));
         assert_eq!(d.code, "bad-instrument", "{name:?}: {d}");
         assert_eq!(d.line, 2, "{d}");
     }
+}
+
+#[test]
+fn the_hash_sigil_is_no_longer_a_header() {
+    // No backward compatibility: `#` carries no meaning any more. The old
+    // `# song:` header form is now just stray content before the header.
+    let d = diag_of("# song: t  tempo: 120.00  meter: 4/4  grid: 1/16\ninstruments: piano:0\n");
+    assert_eq!(d.code, "missing-header", "{d}");
+    assert_eq!(d.line, 1, "{d}");
 }

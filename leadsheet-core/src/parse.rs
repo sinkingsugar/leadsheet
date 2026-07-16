@@ -504,12 +504,12 @@ fn parse_head(head: &str) -> Result<BlockTarget, Raw> {
         .at(head))
 }
 
-const BIND_HINT: &str = "a bind maps a name to a target: `#bind cutoff = cc74` (song-level) or \
-                         `#bind lead.cutoff = cc74` (instrument-scoped), with an optional \
+const BIND_HINT: &str = "a bind maps a name to a target: `bind cutoff = cc74` (song-level) or \
+                         `bind lead.cutoff = cc74` (instrument-scoped), with an optional \
                          `[min..max]` value domain. targets: cc0..=cc127, bend, at, poly<note>, \
                          nrpn<n>, rpn<n>, prog, or opaque vst3:/clap:/osc:/host:<path>";
 
-/// `#bind name = target [min..max]` or `#bind inst.name = target` (the
+/// `bind name = target [min..max]` or `bind inst.name = target` (the
 /// `bind` keyword already stripped). A dotted left side scopes the bind to
 /// that instrument (innermost wins); a plain name is song-level. The
 /// optional `[min..max]` value domain remaps at render.
@@ -563,7 +563,7 @@ fn parse_domain(dom: &str, whole: &str) -> Result<(f64, f64), Raw> {
     Ok((lo, hi))
 }
 
-/// A `#bind` target: a MIDI destination (`cc<n>`, `bend`, `at`,
+/// A `bind` target: a MIDI destination (`cc<n>`, `bend`, `at`,
 /// `nrpn<param>`) or an opaque beyond-MIDI intent (`vst3:`/`clap:`/`osc:`/
 /// `host:` + a path). Non-MIDI targets render to nothing (carried as
 /// intent); MIDI targets render on the track's channel.
@@ -827,7 +827,7 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
     };
     let known_instruments = |instruments: &[Instrument]| -> String {
         if instruments.is_empty() {
-            "no instruments are declared — add them to the `# instruments:` header line".into()
+            "no instruments are declared — add them to the `instruments:` header line".into()
         } else {
             format!(
                 "declared instruments: {}",
@@ -909,7 +909,10 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         let lineno = lineno + 1;
         let err = |r: Raw| diag(lineno, raw_line, r);
         let line = raw_line.trim();
-        if line.is_empty() {
+        if line.is_empty() || line.starts_with("//") {
+            // Blank lines and `//` comments carry no music. Comments are an
+            // authoring courtesy — the canonical form never emits them, so
+            // they are dropped here (before any block/lane handling).
             continue;
         }
 
@@ -983,23 +986,22 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
             continue;
         }
 
-        if let Some(rest) = line.strip_prefix('#') {
-            let trimmed = rest.trim_start();
-            if let Some(after) = trimmed.strip_prefix("bind")
-                && after.starts_with(|c: char| c.is_whitespace())
-            {
-                let b = parse_bind(after.trim(), &track_index).map_err(err)?;
-                if binds.iter().any(|x| x.name == b.name && x.scope == b.scope) {
-                    return Err(err(raw(
-                        "duplicate-bind",
-                        format!("duplicate bind {:?} in the same scope", b.name),
-                    )
-                    .hint("each name binds once per scope (song-level, or per instrument)")));
-                }
-                binds.push(b);
-                continue;
+        if let Some(after) = line.strip_prefix("bind")
+            && after.starts_with(|c: char| c.is_whitespace())
+        {
+            let b = parse_bind(after.trim(), &track_index).map_err(err)?;
+            if binds.iter().any(|x| x.name == b.name && x.scope == b.scope) {
+                return Err(err(raw(
+                    "duplicate-bind",
+                    format!("duplicate bind {:?} in the same scope", b.name),
+                )
+                .hint("each name binds once per scope (song-level, or per instrument)")));
             }
-            parse_header_line(rest, &mut header, &mut instruments, &mut track_index)
+            binds.push(b);
+            continue;
+        }
+        if line.starts_with("song:") || line.starts_with("instruments:") {
+            parse_header_line(line, &mut header, &mut instruments, &mut track_index)
                 .map_err(err)?;
             continue;
         }
@@ -1007,9 +1009,9 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
             continue;
         }
         if header.is_none() {
-            return Err(err(raw("missing-header", "content before `# song:` header").hint(
-                "start the file with `# song: NAME  tempo: 120.00  meter: 4/4  grid: 1/16` and \
-                 `# instruments: name:PROGRAM ...`",
+            return Err(err(raw("missing-header", "content before `song:` header").hint(
+                "start the file with `song: NAME  tempo: 120.00  meter: 4/4  grid: 1/16` and \
+                 `instruments: name:PROGRAM ...`",
             )));
         }
 
@@ -1197,9 +1199,9 @@ pub fn parse_document(text: &str) -> Result<Document, Error> {
         diag(
             0,
             "",
-            raw("missing-header", "missing `# song:` header").hint(
-                "start the file with `# song: NAME  tempo: 120.00  meter: 4/4  grid: 1/16` and \
-                 `# instruments: name:PROGRAM ...`",
+            raw("missing-header", "missing `song:` header").hint(
+                "start the file with `song: NAME  tempo: 120.00  meter: 4/4  grid: 1/16` and \
+                 `instruments: name:PROGRAM ...`",
             ),
         )
     })?;
@@ -1236,7 +1238,7 @@ fn parse_header_line(
     track_index: &mut HashMap<String, usize>,
 ) -> Result<(), Raw> {
     const HEADER_SHAPE: &str =
-        "the song line is `# song: NAME  tempo: BPM  meter: N/D  key: K  grid: 1/16`";
+        "the song line is `song: NAME  tempo: BPM  meter: N/D  key: K  grid: 1/16`";
     let rest = rest.trim();
     if let Some(fields) = rest.strip_prefix("song:") {
         // `song: NAME  tempo: T  meter: N/D  key: K  grid: 1/16` — the name
@@ -1420,6 +1422,7 @@ fn parse_header_line(
         }
         return Ok(());
     }
-    // Any other `#` line is a comment.
+    // Reached only for `song:` / `instruments:` lines (the caller gates on
+    // those prefixes); neither branch above running would be a caller bug.
     Ok(())
 }

@@ -14,8 +14,8 @@ representing less, it represents more.
 ## Example
 
 ```
-# song: demo  tempo: 96.00  meter: 4/4  key: Am  grid: 1/16
-# instruments: bass:33 drums:kit piano:0 lead:81
+song: demo  tempo: 96.00  meter: 4/4  key: Am  grid: 1/16
+instruments: bass:33 drums:kit piano:0 lead:81
 
 P1 bass   | A,,4 A,,4 G,,4 E,,4 |
 P2 drums
@@ -32,7 +32,7 @@ arrangement:
 
 ## Header
 
-- `# song: NAME  tempo: BPM  meter: N/D  key: K  swing: S  grid: 1/16` —
+- `song: NAME  tempo: BPM  meter: N/D  key: K  swing: S  grid: 1/16` —
   `key` is optional (spelling hint only, never changes pitch semantics);
   only `grid: 1/16` exists today. Meter denominator 4 or 8. `tempo` is
   spelled to hundredths of a BPM (`96.00`) — that is the format's full
@@ -45,10 +45,15 @@ arrangement:
   is a render property, like a drummer interpreting the chart. A swung
   note keeps its notated duration (the whole note shifts, as a player
   would), so it may overlap the next straight onset by the swing amount.
-- `# instruments: name:PROGRAM ...` — GM program number, or `kit` for the
+- `instruments: name:PROGRAM ...` — GM program number, or `kit` for the
   drum channel. Declaration order is track order. Names use letters,
   digits, `_` and `-` only.
-- Any other `#` line is a comment.
+
+`song:`, `instruments:`, and `bind` (see [Automation](#automation)) are
+the **directives** — bare `word:` / `word ` lines that configure the
+song. A line beginning with `//` is a **comment**: dropped on parse and
+never emitted, so it does not survive a round-trip (the canonical form is
+the product). Everything else is music.
 
 ## Time
 
@@ -208,16 +213,16 @@ and let the renderer interpolate between them. This is the surface that
 replaces a DAW's automation lanes.
 
 ```
-#bind cutoff = cc74 [0..1]
-#bind lead.wobble = bend [-2..2]
+bind cutoff = cc74 [0..1]
+bind lead.wobble = bend [-2..2]
 
 P1 lead | c4 e4 g4 c4 |
   @cutoff { 0:0.2 8:1 smooth 16:0.5 }
   @wobble { 0:0 8:1 bez:0.7,0,1,1 16:0 }
 ```
 
-**Binds** map a name to a destination. Song-level (`#bind cutoff = cc74`)
-applies to any track; instrument-scoped (`#bind lead.cutoff = cc74`)
+**Binds** map a name to a destination. Song-level (`bind cutoff = cc74`)
+applies to any track; instrument-scoped (`bind lead.cutoff = cc74`)
 applies only on that instrument and shadows a same-named song bind
 (innermost wins), so one name can mean different things on different
 tracks. Targets:
@@ -235,7 +240,7 @@ tracks. Targets:
   onto a MIDI target if it wants it to sound); a host that speaks the
   protocol honors it directly.
 
-A bind may carry a `[min..max]` **value domain** (`#bind cutoff = cc74
+A bind may carry a `[min..max]` **value domain** (`bind cutoff = cc74
 [0..1]`): lane values in that range map linearly onto the target's wire
 range at render, so you can author in normalized (`0..1`) or musical
 (`-2..2` semitones) units. Without a domain, values are already in wire

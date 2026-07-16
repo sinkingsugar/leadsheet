@@ -7,8 +7,8 @@ use leadsheet_core::{emit, parse};
 
 fn song(lanes: &str) -> String {
     format!(
-        "# song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n\
-         # instruments: drums:kit\n\n\
+        "song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n\
+         instruments: drums:kit\n\n\
          P1 drums\n{lanes}\n\n\
          arrangement:\n  [P1]\n"
     )
@@ -92,8 +92,8 @@ fn inexact_division_places_by_the_boundary_rule() {
 
 #[test]
 fn variant_lanes_inherit_groups() {
-    let text = "# song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n\
-                # instruments: drums:kit\n\n\
+    let text = "song: t  tempo: 120.00  meter: 4/4  grid: 1/16\n\
+                instruments: drums:kit\n\n\
                 P1 drums\n  S |(3:4xxx) x... .... ....|\n  K |x... .... x... ....|\n\
                 P2 drums ~P1\n  K |x... x... x... x...|\n\n\
                 arrangement:\n  [P2]\n";

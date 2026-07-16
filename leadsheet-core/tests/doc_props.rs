@@ -708,7 +708,7 @@ fn mutate_hostile(d: &mut Document, which: u8, spice: u8) -> &'static str {
                 d.instruments.first_mut().map(|i| i.name = String::new()).is_some()
             }),
             12 => ("comment-shaped row label", {
-                first_row(d).map(|r| r.label = Some("#x".into())).is_some()
+                first_row(d).map(|r| r.label = Some("//x".into())).is_some()
             }),
             13 => ("zero row repeats", first_row(d).map(|r| r.reps = 0).is_some()),
             14 => ("direct bar zero", {
